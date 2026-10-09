@@ -68,7 +68,7 @@ class ClearCCUrl(commands.Cog):
 			embed_changed = False
 
 			if isinstance(description, str) and "![" in description:
-				cleaned_description = self._sanitize_content(description)
+				cleaned_description, _ = self._sanitize_content(description)
 				if cleaned_description != description:
 					embed_changed = True
 					if cleaned_description:
@@ -118,10 +118,12 @@ class ClearCCUrl(commands.Cog):
 		existing_image_urls = self._get_existing_embed_image_urls(sanitized_embeds)
 		new_image_urls = [url for url in content_image_urls if url not in existing_image_urls]
 		extra_embeds = self._build_image_embeds(new_image_urls)
-		final_embeds = (sanitized_embeds + extra_embeds)[:10]
+		combined_embeds = (sanitized_embeds + extra_embeds)[:10]
+		drop_first_embed = len(combined_embeds) >= 2
+		final_embeds = combined_embeds[1:] if drop_first_embed else combined_embeds
 
 		content_changed = updated_content != message.content
-		if not content_changed and not embeds_changed and not extra_embeds:
+		if not content_changed and not embeds_changed and not extra_embeds and not drop_first_embed:
 			return
 
 		await self._rewrite_message(message, updated_content, final_embeds)
