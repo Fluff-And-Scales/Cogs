@@ -1,0 +1,8 @@
+{
+  "author": ["GitHub Copilot"],
+  "description": "Rewrites custom command markdown image links so Discord displays images instead of literal ![](url) text.",
+  "install_msg": "ClearCCUrl loaded. It will sanitize bot messages containing markdown image links.",
+  "short": "Clean markdown image links in bot output.",
+  "tags": ["redbot", "customcom", "discord"],
+  "type": "COG"
+}
