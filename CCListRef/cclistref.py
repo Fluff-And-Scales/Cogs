@@ -191,25 +191,58 @@ class CCListRef(commands.Cog):
 
 		if isinstance(value, dict):
 			for key in ("content", "response", "text", "message", "reply", "output"):
-				candidate = value.get(key)
-				if isinstance(candidate, str) and candidate.strip():
-					return candidate
-				if isinstance(candidate, (list, tuple)):
-					joined = " | ".join(self._flatten_preview_value(item) for item in candidate)
-					if joined.strip(" |"):
-						return joined
-
-			for nested in value.values():
-				preview = self._flatten_preview_value(nested)
+				preview = self._flatten_preview_value(value.get(key))
 				if preview:
 					return preview
-			return ""
+
+			for key in ("embed", "embeds"):
+				preview = self._extract_embed_preview(value.get(key))
+				if preview:
+					return preview
+
+			return self._extract_embed_text(value)
 
 		if isinstance(value, (list, tuple)):
 			parts = [self._flatten_preview_value(item) for item in value]
 			return " | ".join(part for part in parts if part)
 
-		return str(value) if value is not None else ""
+		return ""
+
+	def _extract_embed_preview(self, value: Any) -> str:
+		if isinstance(value, dict):
+			return self._extract_embed_text(value)
+
+		if isinstance(value, (list, tuple)):
+			for item in value:
+				preview = self._extract_embed_preview(item)
+				if preview:
+					return preview
+
+		return ""
+
+	def _extract_embed_text(self, value: Any) -> str:
+		if not isinstance(value, dict):
+			return ""
+
+		parts: list[str] = []
+		for key in ("title", "description"):
+			candidate = value.get(key)
+			if isinstance(candidate, str) and candidate.strip():
+				parts.append(candidate)
+
+		fields = value.get("fields")
+		if isinstance(fields, list):
+			for field in fields:
+				if not isinstance(field, dict):
+					continue
+				name = field.get("name")
+				field_value = field.get("value")
+				if isinstance(name, str) and name.strip():
+					parts.append(name)
+				if isinstance(field_value, str) and field_value.strip():
+					parts.append(field_value)
+
+		return " | ".join(part for part in parts if part)
 
 	def _render_pages(self, rows: list[dict[str, str]]) -> list[str]:
 		if not rows:
