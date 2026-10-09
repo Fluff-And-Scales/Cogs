@@ -3,11 +3,30 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import re
-import textwrap
+import string
 from typing import Any, Optional
 
 import discord
 from redbot.core import Config, commands
+
+
+class _PreviewValue:
+	def __str__(self) -> str:
+		return "var"
+
+	def __format__(self, format_spec: str) -> str:
+		return "var"
+
+	def __getattr__(self, name: str) -> "_PreviewValue":
+		return self
+
+	def __getitem__(self, key: Any) -> "_PreviewValue":
+		return self
+
+
+class _PreviewFormatter(string.Formatter):
+	def get_value(self, key: Any, args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any:
+		return _PreviewValue()
 
 
 class CCListRef(commands.Cog):
@@ -15,19 +34,20 @@ class CCListRef(commands.Cog):
 
 	_CUSTOMCOM_COG_NAMES = ("CustomCom", "CustomCommands", "customcom")
 	_REFRESH_INTERVAL = 60
-	_NAME_WIDTH = 20
-	_EXAMPLE_WIDTH = 24
-	_OUTPUT_WIDTH = 60
 	_TITLE = "Command List"
 	_NOTE = "An '!' has to be in front of all commands for them to work."
 	_VARIABLE_RE = re.compile(r"\{[^{}]+\}")
 	_WHITESPACE_RE = re.compile(r"\s+")
+	_MARKDOWN_IMAGE_RE = re.compile(r"!\[([^\]]*)\]\((https?://[^)\s]+)\)", re.IGNORECASE)
+	_URL_RE = re.compile(r"https?://[^\s)>]+", re.IGNORECASE)
+	_IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tif", ".tiff", ".svg")
 
 	def __init__(self, bot: commands.Bot):
 		self.bot = bot
 		self.config = Config.get_conf(self, identifier=948275610234, force_registration=True)
 		self.config.register_guild(channel_id=None, message_ids=[], excluded_commands=[])
 		self._refresh_task: Optional[asyncio.Task] = None
+		self._preview_formatter = _PreviewFormatter()
 
 	async def cog_load(self) -> None:
 		self._refresh_task = asyncio.create_task(self._refresh_loop())
@@ -70,8 +90,8 @@ class CCListRef(commands.Cog):
 			if isinstance(name, str) and name.strip()
 		}
 		rows = [row for row in rows if row["name"].casefold() not in excluded]
-		pages = self._render_pages(rows)
-		await self._publish_pages(channel, pages)
+		specs = self._build_message_specs(rows)
+		await self._publish_specs(channel, specs)
 
 	async def get_output_channel(self, guild: discord.Guild) -> Optional[discord.TextChannel]:
 		channel_id = await self.config.guild(guild).channel_id()
@@ -104,11 +124,13 @@ class CCListRef(commands.Cog):
 			if not isinstance(command_name, str):
 				continue
 
+			output_text, image_url = self._extract_output_preview(command_data)
 			rows.append(
 				{
 					"name": command_name.strip(),
 					"example": self._build_command_example(command_name, command_data),
-					"output": self._extract_output_preview(command_data),
+					"output": output_text,
+					"image_url": image_url or "",
 				}
 			)
 
@@ -175,54 +197,87 @@ class CCListRef(commands.Cog):
 
 		return False
 
-	def _extract_output_preview(self, value: Any) -> str:
-		preview = self._flatten_preview_value(value)
+	def _extract_output_preview(self, value: Any) -> tuple[str, str]:
+		preview, image_url = self._flatten_preview_value(value)
 		preview = self._render_preview_output(preview)
-		return preview or "(no text output)"
+		if not preview and image_url:
+			preview = "(image output)"
+		return preview or "(no text output)", image_url or ""
 
 	def _render_preview_output(self, value: str) -> str:
-		rendered = self._VARIABLE_RE.sub("var", value)
-		rendered = self._WHITESPACE_RE.sub(" ", rendered).strip()
+		rendered = value
+		with contextlib.suppress(Exception):
+			rendered = self._preview_formatter.vformat(value, (), {})
+		rendered = self._strip_markdown_images(rendered)
+		rendered = self._strip_bare_image_urls(rendered)
+		rendered = self._VARIABLE_RE.sub("var", rendered)
+		rendered = self._WHITESPACE_RE.sub(" ", rendered).strip(" |")
 		return rendered
 
-	def _flatten_preview_value(self, value: Any) -> str:
+	def _flatten_preview_value(self, value: Any) -> tuple[str, str]:
 		if isinstance(value, str):
-			return value
+			return value, self._extract_first_image_url(value)
 
 		if isinstance(value, dict):
+			text_parts: list[str] = []
+			image_url = ""
+
 			for key in ("content", "response", "text", "message", "reply", "output"):
-				preview = self._flatten_preview_value(value.get(key))
-				if preview:
-					return preview
+				preview_text, preview_image = self._flatten_preview_value(value.get(key))
+				if preview_text:
+					text_parts.append(preview_text)
+				if not image_url and preview_image:
+					image_url = preview_image
 
 			for key in ("embed", "embeds"):
-				preview = self._extract_embed_preview(value.get(key))
-				if preview:
-					return preview
+				embed_text, embed_image = self._extract_embed_preview(value.get(key))
+				if embed_text:
+					text_parts.append(embed_text)
+				if not image_url and embed_image:
+					image_url = embed_image
 
-			return self._extract_embed_text(value)
+			if not text_parts:
+				embed_text, embed_image = self._extract_embed_text(value)
+				if embed_text:
+					text_parts.append(embed_text)
+				if not image_url and embed_image:
+					image_url = embed_image
+
+			return " | ".join(part for part in text_parts if part), image_url
 
 		if isinstance(value, (list, tuple)):
-			parts = [self._flatten_preview_value(item) for item in value]
-			return " | ".join(part for part in parts if part)
+			text_parts: list[str] = []
+			image_url = ""
+			for item in value:
+				preview_text, preview_image = self._flatten_preview_value(item)
+				if preview_text:
+					text_parts.append(preview_text)
+				if not image_url and preview_image:
+					image_url = preview_image
+			return " | ".join(part for part in text_parts if part), image_url
 
-		return ""
+		return "", ""
 
-	def _extract_embed_preview(self, value: Any) -> str:
+	def _extract_embed_preview(self, value: Any) -> tuple[str, str]:
 		if isinstance(value, dict):
 			return self._extract_embed_text(value)
 
 		if isinstance(value, (list, tuple)):
+			text_parts: list[str] = []
+			image_url = ""
 			for item in value:
-				preview = self._extract_embed_preview(item)
-				if preview:
-					return preview
+				preview_text, preview_image = self._extract_embed_preview(item)
+				if preview_text:
+					text_parts.append(preview_text)
+				if not image_url and preview_image:
+					image_url = preview_image
+			return " | ".join(part for part in text_parts if part), image_url
 
-		return ""
+		return "", ""
 
-	def _extract_embed_text(self, value: Any) -> str:
+	def _extract_embed_text(self, value: Any) -> tuple[str, str]:
 		if not isinstance(value, dict):
-			return ""
+			return "", ""
 
 		parts: list[str] = []
 		for key in ("title", "description"):
@@ -242,80 +297,72 @@ class CCListRef(commands.Cog):
 				if isinstance(field_value, str) and field_value.strip():
 					parts.append(field_value)
 
-		return " | ".join(part for part in parts if part)
+		image_url = self._extract_embed_image_url(value)
+		return " | ".join(part for part in parts if part), image_url
 
-	def _render_pages(self, rows: list[dict[str, str]]) -> list[str]:
+	def _extract_embed_image_url(self, value: dict[str, Any]) -> str:
+		for key in ("image", "thumbnail"):
+			candidate = value.get(key)
+			if isinstance(candidate, dict):
+				url = candidate.get("url")
+				if isinstance(url, str) and self._is_image_url(url):
+					return url.strip().strip("<>")
+		return ""
+
+	def _extract_first_image_url(self, value: str) -> str:
+		for match in self._MARKDOWN_IMAGE_RE.finditer(value):
+			url = match.group(2).strip()
+			if self._is_image_url(url):
+				return url.strip().strip("<>")
+
+		for match in self._URL_RE.finditer(value):
+			url = match.group(0).strip()
+			if self._is_image_url(url):
+				return url.strip().strip("<>")
+
+		return ""
+
+	def _strip_markdown_images(self, value: str) -> str:
+		def _replace(match: re.Match[str]) -> str:
+			alt_text = match.group(1).strip()
+			return alt_text
+
+		return self._MARKDOWN_IMAGE_RE.sub(_replace, value)
+
+	def _strip_bare_image_urls(self, value: str) -> str:
+		def _replace(match: re.Match[str]) -> str:
+			url = match.group(0)
+			return "" if self._is_image_url(url) else url
+
+		return self._URL_RE.sub(_replace, value)
+
+	def _is_image_url(self, value: str) -> bool:
+		target = value.strip().strip("<>")
+		target_lower = target.casefold()
+		if not (target_lower.startswith("http://") or target_lower.startswith("https://")):
+			return False
+		path = target_lower.split("?", 1)[0]
+		return path.endswith(self._IMAGE_EXTENSIONS)
+
+	def _build_message_specs(self, rows: list[dict[str, str]]) -> list[dict[str, Any]]:
+		header_embed = discord.Embed(title=self._TITLE, description=self._NOTE)
+		specs: list[dict[str, Any]] = [{"content": None, "embed": header_embed}]
+
 		if not rows:
-			rows = [{"name": "(none)", "example": "", "output": "No custom commands available."}]
-
-		pages: list[str] = []
-		current_lines: list[str] = []
+			empty_embed = discord.Embed(title="No Custom Commands", description="No custom commands available.")
+			specs.append({"content": None, "embed": empty_embed})
+			return specs
 
 		for row in rows:
-			row_lines = self._render_row_lines(row["name"], row["example"], row["output"])
-			trial_lines = current_lines + row_lines
-			is_first_page = not pages
-			trial_page = self._build_page_content(trial_lines, is_first_page=is_first_page)
-			if current_lines and len(trial_page) > 1900:
-				pages.append(self._build_page_content(current_lines, is_first_page=is_first_page))
-				current_lines = row_lines
-			else:
-				current_lines = trial_lines
+			embed = discord.Embed(title=row["name"], description=row["output"])
+			embed.add_field(name="Example", value=row["example"], inline=False)
+			if row["image_url"]:
+				embed.set_image(url=row["image_url"])
+			specs.append({"content": None, "embed": embed})
 
-		if current_lines or not pages:
-			pages.append(self._build_page_content(current_lines, is_first_page=not pages))
+		return specs
 
-		return pages
-
-	def _build_page_content(self, row_lines: list[str], *, is_first_page: bool) -> str:
-		prefix = (
-			f"{self._TITLE}\n{self._NOTE}\n\n\n"
-			if is_first_page
-			else f"{self._TITLE} (continued)\n\n"
-		)
-		top_border = self._table_border("┌", "┬", "┐")
-		header_row = self._table_row("Command Name", "Example", "Output")
-		header_border = self._table_border("├", "┼", "┤")
-		bottom_border = self._table_border("└", "┴", "┘")
-		table_lines = [top_border, header_row, header_border, *row_lines, bottom_border]
-		return prefix + "```text\n" + "\n".join(table_lines) + "\n```"
-
-	def _table_border(self, left: str, middle: str, right: str) -> str:
-		return (
-			f"{left}{'─' * (self._NAME_WIDTH + 2)}{middle}"
-			f"{'─' * (self._EXAMPLE_WIDTH + 2)}{middle}"
-			f"{'─' * (self._OUTPUT_WIDTH + 2)}{right}"
-		)
-
-	def _table_row(self, name: str, example: str, output: str) -> str:
-		return (
-			f"│ {name:<{self._NAME_WIDTH}} │ "
-			f"{example:<{self._EXAMPLE_WIDTH}} │ "
-			f"{output:<{self._OUTPUT_WIDTH}} │"
-		)
-
-	def _render_row_lines(self, name: str, example: str, output: str) -> list[str]:
-		name_lines = self._wrap_cell(name, self._NAME_WIDTH)
-		example_lines = self._wrap_cell(example, self._EXAMPLE_WIDTH)
-		output_lines = self._wrap_cell(output, self._OUTPUT_WIDTH)
-		row_count = max(len(name_lines), len(example_lines), len(output_lines))
-		lines: list[str] = []
-
-		for index in range(row_count):
-			name_part = name_lines[index] if index < len(name_lines) else ""
-			example_part = example_lines[index] if index < len(example_lines) else ""
-			output_part = output_lines[index] if index < len(output_lines) else ""
-			lines.append(self._table_row(name_part, example_part, output_part))
-
-		return lines
-
-	def _wrap_cell(self, value: str, width: int) -> list[str]:
-		cleaned = self._WHITESPACE_RE.sub(" ", value).strip()
-		if not cleaned:
-			return [""]
-		return textwrap.wrap(cleaned, width=width, break_long_words=True, break_on_hyphens=False) or [""]
-
-	async def _publish_pages(self, channel: discord.TextChannel, pages: list[str]) -> None:
+	async def _publish_specs(self, channel: discord.TextChannel, specs: list[dict[str, Any]]) -> None:
 		me = channel.guild.me
 		if me is None:
 			return
@@ -331,20 +378,24 @@ class CCListRef(commands.Cog):
 				existing_messages.append(await channel.fetch_message(message_id))
 
 		published_ids: list[int] = []
-		for index, page in enumerate(pages):
+		for index, spec in enumerate(specs):
+			content = spec.get("content")
+			embed = spec.get("embed")
 			if index < len(existing_messages):
 				message = existing_messages[index]
-				if message.content != page:
+				message_embed = message.embeds[0].to_dict() if message.embeds else None
+				spec_embed = embed.to_dict() if isinstance(embed, discord.Embed) else None
+				if message.content != (content or "") or message_embed != spec_embed:
 					with contextlib.suppress(discord.Forbidden, discord.NotFound, discord.HTTPException):
-						await message.edit(content=page)
+						await message.edit(content=content, embed=embed)
 				published_ids.append(message.id)
 				continue
 
 			with contextlib.suppress(discord.Forbidden, discord.HTTPException):
-				message = await channel.send(page)
+				message = await channel.send(content=content, embed=embed)
 				published_ids.append(message.id)
 
-		for message in existing_messages[len(pages):]:
+		for message in existing_messages[len(specs):]:
 			with contextlib.suppress(discord.Forbidden, discord.NotFound, discord.HTTPException):
 				await message.delete()
 
