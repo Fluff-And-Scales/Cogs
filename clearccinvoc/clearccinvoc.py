@@ -268,9 +268,6 @@ class ClearCCInvoc(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message) -> None:
-        if self._patched_cog is not None:
-            return
-
         if await self._should_delete_invocation(message):
             await self._delete_message(message)
 
