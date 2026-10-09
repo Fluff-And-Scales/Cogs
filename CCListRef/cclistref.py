@@ -20,6 +20,8 @@ class CCListRef(commands.Cog):
 	_OUTPUT_WIDTH = 60
 	_TITLE = "Command List"
 	_NOTE = "An '!' has to be in front of all commands for them to work."
+	_VARIABLE_RE = re.compile(r"\{[^{}]+\}")
+	_WHITESPACE_RE = re.compile(r"\s+")
 
 	def __init__(self, bot: commands.Bot):
 		self.bot = bot
@@ -105,7 +107,7 @@ class CCListRef(commands.Cog):
 			rows.append(
 				{
 					"name": command_name.strip(),
-					"example": self._build_command_example(command_name),
+					"example": self._build_command_example(command_name, command_data),
 					"output": self._extract_output_preview(command_data),
 				}
 			)
@@ -155,13 +157,33 @@ class CCListRef(commands.Cog):
 				return True
 		return False
 
-	def _build_command_example(self, command_name: str) -> str:
-		return f"!{command_name.strip()}"
+	def _build_command_example(self, command_name: str, command_data: Any) -> str:
+		example = f"!{command_name.strip()}"
+		if self._command_uses_variable(command_data):
+			example += " @<user>"
+		return example
+
+	def _command_uses_variable(self, value: Any) -> bool:
+		if isinstance(value, str):
+			return bool(self._VARIABLE_RE.search(value))
+
+		if isinstance(value, dict):
+			return any(self._command_uses_variable(item) for item in value.values())
+
+		if isinstance(value, (list, tuple)):
+			return any(self._command_uses_variable(item) for item in value)
+
+		return False
 
 	def _extract_output_preview(self, value: Any) -> str:
 		preview = self._flatten_preview_value(value)
-		preview = re.sub(r"\s+", " ", preview).strip()
+		preview = self._render_preview_output(preview)
 		return preview or "(no text output)"
+
+	def _render_preview_output(self, value: str) -> str:
+		rendered = self._VARIABLE_RE.sub("var", value)
+		rendered = self._WHITESPACE_RE.sub(" ", rendered).strip()
+		return rendered
 
 	def _flatten_preview_value(self, value: Any) -> str:
 		if isinstance(value, str):
@@ -218,12 +240,26 @@ class CCListRef(commands.Cog):
 			if is_first_page
 			else f"{self._TITLE} (continued)\n\n"
 		)
-		header = [
-			f"{'Command Name':<{self._NAME_WIDTH}} | {'Example':<{self._EXAMPLE_WIDTH}} | Output",
-			f"{'-' * self._NAME_WIDTH}-+-{'-' * self._EXAMPLE_WIDTH}-+-{'-' * self._OUTPUT_WIDTH}",
-		]
-		table_lines = header + row_lines
+		top_border = self._table_border("┌", "┬", "┐")
+		header_row = self._table_row("Command Name", "Example", "Output")
+		header_border = self._table_border("├", "┼", "┤")
+		bottom_border = self._table_border("└", "┴", "┘")
+		table_lines = [top_border, header_row, header_border, *row_lines, bottom_border]
 		return prefix + "```text\n" + "\n".join(table_lines) + "\n```"
+
+	def _table_border(self, left: str, middle: str, right: str) -> str:
+		return (
+			f"{left}{'─' * (self._NAME_WIDTH + 2)}{middle}"
+			f"{'─' * (self._EXAMPLE_WIDTH + 2)}{middle}"
+			f"{'─' * (self._OUTPUT_WIDTH + 2)}{right}"
+		)
+
+	def _table_row(self, name: str, example: str, output: str) -> str:
+		return (
+			f"│ {name:<{self._NAME_WIDTH}} │ "
+			f"{example:<{self._EXAMPLE_WIDTH}} │ "
+			f"{output:<{self._OUTPUT_WIDTH}} │"
+		)
 
 	def _render_row_lines(self, name: str, example: str, output: str) -> list[str]:
 		name_lines = self._wrap_cell(name, self._NAME_WIDTH)
@@ -236,14 +272,12 @@ class CCListRef(commands.Cog):
 			name_part = name_lines[index] if index < len(name_lines) else ""
 			example_part = example_lines[index] if index < len(example_lines) else ""
 			output_part = output_lines[index] if index < len(output_lines) else ""
-			lines.append(
-				f"{name_part:<{self._NAME_WIDTH}} | {example_part:<{self._EXAMPLE_WIDTH}} | {output_part}"
-			)
+			lines.append(self._table_row(name_part, example_part, output_part))
 
 		return lines
 
 	def _wrap_cell(self, value: str, width: int) -> list[str]:
-		cleaned = re.sub(r"\s+", " ", value).strip()
+		cleaned = self._WHITESPACE_RE.sub(" ", value).strip()
 		if not cleaned:
 			return [""]
 		return textwrap.wrap(cleaned, width=width, break_long_words=True, break_on_hyphens=False) or [""]
