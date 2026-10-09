@@ -103,8 +103,8 @@ class ClearCCInvoc(commands.Cog):
         if message.guild is None or message.author.bot:
             return False
 
-        content = message.content.strip()
-        if not content:
+        candidates = await self._get_invocation_candidates(message)
+        if not candidates:
             return False
 
         customcom = self._get_customcom_cog()
@@ -115,22 +115,24 @@ class ClearCCInvoc(commands.Cog):
             candidate = getattr(customcom, candidate_name, None)
             if candidate is None:
                 continue
-            try:
-                result = candidate(message.guild, content)
-            except TypeError:
+
+            for candidate_content in candidates:
                 try:
-                    result = candidate(content)
+                    result = candidate(message.guild, candidate_content)
+                except TypeError:
+                    try:
+                        result = candidate(candidate_content)
+                    except Exception:
+                        result = None
                 except Exception:
                     result = None
-            except Exception:
-                result = None
 
-            if asyncio.iscoroutine(result):
-                with contextlib.suppress(Exception):
-                    result = await result
+                if asyncio.iscoroutine(result):
+                    with contextlib.suppress(Exception):
+                        result = await result
 
-            if result:
-                return True
+                if result:
+                    return True
 
         config = getattr(customcom, "config", None)
         if config is None:
@@ -141,7 +143,41 @@ class ClearCCInvoc(commands.Cog):
         except Exception:
             return False
 
-        return self._content_matches_config(guild_data, content.casefold())
+        for candidate_content in candidates:
+            if self._content_matches_config(guild_data, candidate_content.casefold()):
+                return True
+
+        return False
+
+    async def _get_invocation_candidates(self, message: discord.Message) -> list[str]:
+        content = message.content.lstrip()
+        if not content:
+            return []
+
+        prefixes = await self._get_prefixes(message)
+        for prefix in sorted(prefixes, key=len, reverse=True):
+            if content.startswith(prefix):
+                remainder = content[len(prefix):].strip()
+                if not remainder:
+                    return []
+
+                token = remainder.split(maxsplit=1)[0]
+                candidates = [token]
+                if remainder != token:
+                    candidates.append(remainder)
+                return candidates
+
+        return []
+
+    async def _get_prefixes(self, message: discord.Message) -> list[str]:
+        prefixes = self.bot.get_prefix(message)
+        if asyncio.iscoroutine(prefixes):
+            prefixes = await prefixes
+
+        if isinstance(prefixes, str):
+            return [prefixes]
+
+        return [prefix for prefix in prefixes if isinstance(prefix, str)]
 
     def _content_matches_config(self, value: Any, normalized_content: str) -> bool:
         if isinstance(value, dict):
