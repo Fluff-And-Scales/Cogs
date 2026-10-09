@@ -41,6 +41,46 @@ class CCListRef(commands.Cog):
 	_MARKDOWN_IMAGE_RE = re.compile(r"!\[([^\]]*)\]\((https?://[^)\s]+)\)", re.IGNORECASE)
 	_URL_RE = re.compile(r"https?://[^\s)>]+", re.IGNORECASE)
 	_IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tif", ".tiff", ".svg")
+	_COMMAND_CONTAINER_KEYS = ("commands", "ccs", "custom_commands", "customcom", "cmds")
+	_COMMAND_FIELD_KEYS = {
+		"content",
+		"response",
+		"text",
+		"message",
+		"reply",
+		"output",
+		"embed",
+		"embeds",
+		"cooldowns",
+		"delete_trigger",
+	}
+	_NON_COMMAND_TABLE_KEYS = {
+		"content",
+		"response",
+		"text",
+		"message",
+		"reply",
+		"output",
+		"embed",
+		"embeds",
+		"cooldowns",
+		"delete_trigger",
+		"title",
+		"description",
+		"fields",
+		"thumbnail",
+		"image",
+		"author",
+		"footer",
+		"aliases",
+		"roles",
+		"reactions",
+		"created_at",
+		"edited_at",
+		"command",
+		"random",
+		"case_insensitive",
+	}
 
 	def __init__(self, bot: commands.Bot):
 		self.bot = bot
@@ -119,65 +159,86 @@ class CCListRef(commands.Cog):
 		if not command_table:
 			return []
 
-		rows: list[dict[str, str]] = []
+		row_map: dict[str, dict[str, str]] = {}
 		for command_name, command_data in sorted(command_table.items(), key=lambda item: str(item[0]).casefold()):
 			if not isinstance(command_name, str):
 				continue
 
-			output_text, image_url = self._extract_output_preview(command_data)
-			rows.append(
-				{
-					"name": command_name.strip(),
-					"example": self._build_command_example(command_name, command_data),
-					"output": output_text,
-					"image_url": image_url or "",
-				}
-			)
+			normalized_name = command_name.strip()
+			if not normalized_name:
+				continue
 
-		return rows
+			output_text, image_url = self._extract_output_preview(command_data)
+			row_map[normalized_name.casefold()] = {
+				"name": normalized_name,
+				"example": self._build_command_example(normalized_name, command_data),
+				"output": output_text,
+				"image_url": image_url or "",
+			}
+
+		return list(row_map.values())
 
 	def _find_command_table(self, value: Any) -> Optional[dict[Any, Any]]:
+		candidates = self._find_command_tables(value)
+		if not candidates:
+			return None
+
+		return max(candidates, key=len)
+
+	def _find_command_tables(self, value: Any) -> list[dict[Any, Any]]:
+		candidates: list[dict[Any, Any]] = []
 		if isinstance(value, dict):
+			for key in self._COMMAND_CONTAINER_KEYS:
+				candidate = value.get(key)
+				if isinstance(candidate, dict) and self._mapping_looks_like_command_table(candidate):
+					candidates.append(candidate)
+
 			if self._mapping_looks_like_command_table(value):
-				return value
+				candidates.append(value)
 
 			for nested in value.values():
-				result = self._find_command_table(nested)
-				if result is not None:
-					return result
+				candidates.extend(self._find_command_tables(nested))
 
 		elif isinstance(value, list):
 			for item in value:
-				result = self._find_command_table(item)
-				if result is not None:
-					return result
+				candidates.extend(self._find_command_tables(item))
 
-		return None
+		unique_candidates: list[dict[Any, Any]] = []
+		seen_ids: set[int] = set()
+		for candidate in candidates:
+			candidate_id = id(candidate)
+			if candidate_id in seen_ids:
+				continue
+			seen_ids.add(candidate_id)
+			unique_candidates.append(candidate)
+
+		return unique_candidates
 
 	def _mapping_looks_like_command_table(self, mapping: dict[Any, Any]) -> bool:
-		response_keys = {
-			"content",
-			"response",
-			"text",
-			"message",
-			"reply",
-			"output",
-			"embed",
-			"embeds",
-			"cooldowns",
-			"delete_trigger",
-		}
 		if not mapping:
 			return False
 
-		for key, item in mapping.items():
+		normalized_keys = []
+		for key in mapping:
 			if not isinstance(key, str):
 				return False
-			if isinstance(item, dict) and any(field in item for field in response_keys):
-				return True
+			normalized_keys.append(key.strip().casefold())
+
+		if normalized_keys and all(key in self._NON_COMMAND_TABLE_KEYS for key in normalized_keys):
+			return False
+
+		valid_entries = 0
+		for key, item in mapping.items():
+			normalized_key = key.strip().casefold()
+			if normalized_key in self._NON_COMMAND_TABLE_KEYS:
+				continue
+			if isinstance(item, dict) and any(field in item for field in self._COMMAND_FIELD_KEYS):
+				valid_entries += 1
+				continue
 			if isinstance(item, (str, list, tuple)):
-				return True
-		return False
+				valid_entries += 1
+
+		return valid_entries > 0
 
 	def _build_command_example(self, command_name: str, command_data: Any) -> str:
 		example = f"!{command_name.strip()}"
