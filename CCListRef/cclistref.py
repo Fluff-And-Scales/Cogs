@@ -304,7 +304,7 @@ class CCListRef(commands.Cog):
 
 		return True
 
-	@commands.group()
+	@commands.group(invoke_without_command=True)
 	@commands.guild_only()
 	@commands.admin_or_permissions(manage_guild=True)
 	async def cclistrefset(self, ctx: commands.Context) -> None:
@@ -351,7 +351,7 @@ class CCListRef(commands.Cog):
 			f"CCListRef is configured to post in {channel.mention}. Excluded commands: {excluded_count}."
 		)
 
-	@cclistrefset.group(name="exclude")
+	@cclistrefset.group(name="exclude", invoke_without_command=True)
 	async def cclistrefset_exclude(self, ctx: commands.Context) -> None:
 		"""Manage excluded custom commands."""
 		if ctx.invoked_subcommand is None:
