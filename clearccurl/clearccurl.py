@@ -24,16 +24,13 @@ class ClearCCUrl(commands.Cog):
 		path = target_lower.split("?", 1)[0]
 		return path.endswith(self._IMAGE_EXTENSIONS)
 
-	def _sanitize_content(self, content: str) -> tuple[str, list[str]]:
-		image_urls: list[str] = []
-
+	def _sanitize_content(self, content: str) -> str:
 		def _replace(match: re.Match[str]) -> str:
 			alt_text = match.group(1).strip()
 			target_raw = match.group(2).strip()
 			target = target_raw.strip("<>")
 
 			if self._is_image_url(target_raw):
-				image_urls.append(target)
 				return alt_text
 
 			return alt_text or target
@@ -41,20 +38,11 @@ class ClearCCUrl(commands.Cog):
 		cleaned = self._MARKDOWN_IMAGE_RE.sub(_replace, content)
 		cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
 		cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
-		return cleaned.strip(), image_urls
+		return cleaned.strip()
 
-	def _build_embeds(self, image_urls: list[str]) -> list[discord.Embed]:
-		embeds: list[discord.Embed] = []
-		for url in image_urls:
-			embed = discord.Embed()
-			embed.set_image(url=url)
-			embeds.append(embed)
-		return embeds
-
-	def _sanitize_embeds(self, embeds: list[discord.Embed]) -> tuple[list[discord.Embed], bool, list[str]]:
+	def _sanitize_embeds(self, embeds: list[discord.Embed]) -> tuple[list[discord.Embed], bool]:
 		sanitized: list[discord.Embed] = []
 		has_changes = False
-		extra_image_urls: list[str] = []
 
 		for embed in embeds:
 			data = embed.to_dict()
@@ -62,7 +50,7 @@ class ClearCCUrl(commands.Cog):
 			embed_changed = False
 
 			if isinstance(description, str) and "![" in description:
-				cleaned_description, image_urls = self._sanitize_content(description)
+				cleaned_description = self._sanitize_content(description)
 				if cleaned_description != description:
 					embed_changed = True
 					if cleaned_description:
@@ -70,18 +58,10 @@ class ClearCCUrl(commands.Cog):
 					else:
 						data.pop("description", None)
 
-				if image_urls:
-					existing_image_url = ((data.get("image") or {}).get("url"))
-					if not existing_image_url:
-						data["image"] = {"url": image_urls[0]}
-						embed_changed = True
-						image_urls = image_urls[1:]
-					extra_image_urls.extend(image_urls)
-
 			has_changes = has_changes or embed_changed
 			sanitized.append(discord.Embed.from_dict(data) if embed_changed else embed)
 
-		return sanitized, has_changes, extra_image_urls
+		return sanitized, has_changes
 
 	async def _rewrite_message(self, message: discord.Message, updated_content: str, embeds: list[discord.Embed]) -> None:
 		content_payload = updated_content or None
@@ -112,19 +92,16 @@ class ClearCCUrl(commands.Cog):
 			return
 
 		updated_content = message.content
-		content_image_urls: list[str] = []
 		if message.content and "![" in message.content:
-			updated_content, content_image_urls = self._sanitize_content(message.content)
+			updated_content = self._sanitize_content(message.content)
 
-		sanitized_embeds, embeds_changed, embed_image_urls = self._sanitize_embeds(list(message.embeds))
-		extra_embeds = self._build_embeds(content_image_urls + embed_image_urls)
-		final_embeds = (sanitized_embeds + extra_embeds)[:10]
+		sanitized_embeds, embeds_changed = self._sanitize_embeds(list(message.embeds))
 
 		content_changed = updated_content != message.content
-		if not content_changed and not embeds_changed and not extra_embeds:
+		if not content_changed and not embeds_changed:
 			return
 
-		await self._rewrite_message(message, updated_content, final_embeds)
+		await self._rewrite_message(message, updated_content, sanitized_embeds)
 
 
 async def setup(bot: commands.Bot):
