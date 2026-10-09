@@ -35,7 +35,7 @@ class ClearCCInvoc(commands.Cog):
         self._original_listener: Optional[Any] = None
 
     async def cog_load(self) -> None:
-        self._patch_task = asyncio.create_task(self._patch_customcom())
+        return
 
     async def cog_unload(self) -> None:
         if self._patch_task and not self._patch_task.done():
@@ -266,10 +266,27 @@ class ClearCCInvoc(commands.Cog):
         with contextlib.suppress(discord.Forbidden, discord.NotFound, discord.HTTPException):
             await message.delete()
 
+    async def _get_previous_human_message(self, message: discord.Message) -> Optional[discord.Message]:
+        with contextlib.suppress(discord.HTTPException, discord.Forbidden):
+            async for candidate in message.channel.history(limit=5, before=message):
+                if candidate.author.bot:
+                    continue
+                if candidate.guild is None:
+                    continue
+                return candidate
+        return None
+
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message) -> None:
-        if await self._should_delete_invocation(message):
-            await self._delete_message(message)
+        if not message.author.bot or message.guild is None:
+            return
+
+        previous = await self._get_previous_human_message(message)
+        if previous is None:
+            return
+
+        if await self._should_delete_invocation(previous):
+            await self._delete_message(previous)
 
 
 async def setup(bot: commands.Bot):
