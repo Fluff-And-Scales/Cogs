@@ -30,6 +30,9 @@ class ClearCCInvoc(commands.Cog):
         self._patched_cog: Optional[Any] = None
         self._patched_method_name: Optional[str] = None
         self._original_method: Optional[Any] = None
+        self._patched_listener_event: Optional[str] = None
+        self._patched_listener_index: Optional[int] = None
+        self._original_listener: Optional[Any] = None
 
     async def cog_load(self) -> None:
         self._patch_task = asyncio.create_task(self._patch_customcom())
@@ -55,7 +58,13 @@ class ClearCCInvoc(commands.Cog):
             else:
                 await asyncio.wait_for(self.bot.wait_until_ready(), timeout=30)
 
-        customcom = self._get_customcom_cog()
+        customcom = None
+        for _ in range(60):
+            customcom = self._get_customcom_cog()
+            if customcom is not None:
+                break
+            await asyncio.sleep(1)
+
         if customcom is None:
             return
 
@@ -66,19 +75,44 @@ class ClearCCInvoc(commands.Cog):
 
             wrapped = self._build_wrapper(original)
             setattr(customcom, method_name, wrapped)
+            self._replace_registered_listener(customcom, method_name, wrapped)
             self._patched_cog = customcom
             self._patched_method_name = method_name
             self._original_method = original
             return
 
-    async def _unpatch_customcom(self) -> None:
-        if self._patched_cog is None or self._patched_method_name is None or self._original_method is None:
+    def _replace_registered_listener(self, customcom: Any, method_name: str, wrapped: Any) -> None:
+        listeners = getattr(self.bot, "extra_events", {}).get(method_name)
+        if not listeners:
             return
 
-        setattr(self._patched_cog, self._patched_method_name, self._original_method)
+        for index, listener in enumerate(listeners):
+            if getattr(listener, "__self__", None) is customcom and getattr(listener, "__name__", None) == method_name:
+                listeners[index] = wrapped
+                self._patched_listener_event = method_name
+                self._patched_listener_index = index
+                self._original_listener = listener
+                return
+
+    async def _unpatch_customcom(self) -> None:
+        if self._patched_cog is not None and self._patched_method_name is not None and self._original_method is not None:
+            setattr(self._patched_cog, self._patched_method_name, self._original_method)
+
+        if (
+            self._patched_listener_event is not None
+            and self._patched_listener_index is not None
+            and self._original_listener is not None
+        ):
+            listeners = getattr(self.bot, "extra_events", {}).get(self._patched_listener_event)
+            if listeners and 0 <= self._patched_listener_index < len(listeners):
+                listeners[self._patched_listener_index] = self._original_listener
+
         self._patched_cog = None
         self._patched_method_name = None
         self._original_method = None
+        self._patched_listener_event = None
+        self._patched_listener_index = None
+        self._original_listener = None
 
     def _build_wrapper(self, original: Any):
         @functools.wraps(original)
