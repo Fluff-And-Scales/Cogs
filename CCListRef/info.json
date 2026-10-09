@@ -1,0 +1,8 @@
+{
+  "author": ["GitHub Copilot"],
+  "description": "A Redbot cog scaffold for CCListRef.",
+  "install_msg": "CCListRef loaded.",
+  "short": "CCListRef cog.",
+  "tags": ["redbot", "customcom"],
+  "type": "COG"
+}
