@@ -223,8 +223,10 @@ class CCListRef(commands.Cog):
 			if use_active_name_set:
 				if normalized_key not in active_names:
 					continue
-			elif not await self._is_active_custom_command(customcom, guild, normalized_name):
-				continue
+			else:
+				active_state = await self._is_active_custom_command(customcom, guild, normalized_name)
+				if active_state is False:
+					continue
 
 			output_text, image_url = self._extract_output_preview(command_data)
 			row_map[normalized_key] = {
@@ -307,7 +309,7 @@ class CCListRef(commands.Cog):
 
 		return names
 
-	async def _is_active_custom_command(self, customcom: Any, guild: discord.Guild, command_name: str) -> bool:
+	async def _is_active_custom_command(self, customcom: Any, guild: discord.Guild, command_name: str) -> Optional[bool]:
 		lookup_methods = ("get_command", "get_cc", "get_custom_command", "get_customcom")
 		attempted_lookup = False
 		normalized_name = command_name.casefold()
@@ -367,9 +369,9 @@ class CCListRef(commands.Cog):
 					return True
 
 		if not attempted_lookup:
-			return False
+			return None
 
-		return False
+		return None
 
 	def _find_command_table(self, value: Any) -> Optional[dict[Any, Any]]:
 		candidates = self._find_command_tables(value)
