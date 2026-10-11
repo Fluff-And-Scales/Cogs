@@ -205,6 +205,10 @@ class CCListRef(commands.Cog):
 
 		command_table = await self._get_command_table_from_config(config, guild)
 		if not command_table:
+			command_table = await self._get_command_table_from_methods(customcom, guild)
+		if not command_table:
+			command_table = await self._get_command_table_from_config_scan(config, guild)
+		if not command_table:
 			return []
 
 		active_names = await self._get_active_custom_command_names(customcom, guild)
@@ -254,6 +258,54 @@ class CCListRef(commands.Cog):
 					value = await value
 				if isinstance(value, dict) and self._mapping_looks_like_command_table(value):
 					return value
+
+		return {}
+
+	async def _get_command_table_from_methods(self, customcom: Any, guild: discord.Guild) -> dict[Any, Any]:
+		method_names = ("get_commands", "get_ccs", "list_commands", "all_commands")
+		for method_name in method_names:
+			method = getattr(customcom, method_name, None)
+			if method is None:
+				continue
+
+			for args in ((guild,), (guild.id,), tuple()):
+				with contextlib.suppress(Exception):
+					result = method(*args)
+					if asyncio.iscoroutine(result):
+						result = await result
+					table = self._normalize_command_table_result(result)
+					if table:
+						return table
+
+		return {}
+
+	async def _get_command_table_from_config_scan(self, config: Any, guild: discord.Guild) -> dict[Any, Any]:
+		with contextlib.suppress(Exception):
+			guild_data = await config.guild(guild).all()
+			command_table = self._find_command_table(guild_data)
+			if isinstance(command_table, dict):
+				return command_table
+		return {}
+
+	def _normalize_command_table_result(self, value: Any) -> dict[Any, Any]:
+		if isinstance(value, dict):
+			return value if self._mapping_looks_like_command_table(value) else {}
+
+		if isinstance(value, (list, tuple, set)):
+			normalized: dict[str, Any] = {}
+			for item in value:
+				if isinstance(item, str) and item.strip():
+					normalized[item.strip()] = {}
+					continue
+				if isinstance(item, dict):
+					name = item.get("name") or item.get("command") or item.get("trigger")
+					if isinstance(name, str) and name.strip():
+						normalized[name.strip()] = item
+					continue
+				name = getattr(item, "name", None)
+				if isinstance(name, str) and name.strip():
+					normalized[name.strip()] = item
+			return normalized
 
 		return {}
 
