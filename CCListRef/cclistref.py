@@ -236,18 +236,15 @@ class CCListRef(commands.Cog):
 			getter = getattr(guild_conf, key, None)
 			if getter is None or not callable(getter):
 				continue
+
 			with contextlib.suppress(Exception):
 				value = getter()
+				if hasattr(value, "all") and callable(getattr(value, "all")):
+					value = value.all()
 				if asyncio.iscoroutine(value):
 					value = await value
 				if isinstance(value, dict) and self._mapping_looks_like_command_table(value):
 					return value
-
-		with contextlib.suppress(Exception):
-			guild_data = await guild_conf.all()
-			command_table = self._find_command_table(guild_data)
-			if isinstance(command_table, dict):
-				return command_table
 
 		return {}
 
