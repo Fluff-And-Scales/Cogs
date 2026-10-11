@@ -310,6 +310,7 @@ class CCListRef(commands.Cog):
 	async def _is_active_custom_command(self, customcom: Any, guild: discord.Guild, command_name: str) -> bool:
 		lookup_methods = ("get_command", "get_cc", "get_custom_command", "get_customcom")
 		attempted_lookup = False
+		normalized_name = command_name.casefold()
 
 		for method_name in lookup_methods:
 			method = getattr(customcom, method_name, None)
@@ -317,20 +318,53 @@ class CCListRef(commands.Cog):
 				continue
 
 			attempted_lookup = True
-			result: Any = None
-			with contextlib.suppress(Exception):
-				result = method(guild, command_name)
+			call_patterns = (
+				((guild, command_name), {}),
+				((command_name, guild), {}),
+				((command_name,), {}),
+				(tuple(), {"guild": guild, "command": command_name}),
+				(tuple(), {"guild": guild, "command_name": command_name}),
+				(tuple(), {"ctx_guild": guild, "command": command_name}),
+			)
 
-			if result is None:
+			for args, kwargs in call_patterns:
+				result: Any = None
+				called = False
 				with contextlib.suppress(Exception):
-					result = method(command_name)
+					result = method(*args, **kwargs)
+					called = True
 
-			if asyncio.iscoroutine(result):
-				with contextlib.suppress(Exception):
-					result = await result
+				if not called:
+					continue
 
-			if result:
-				return True
+				if asyncio.iscoroutine(result):
+					with contextlib.suppress(Exception):
+						result = await result
+
+				if result is None:
+					continue
+				if isinstance(result, bool):
+					if result:
+						return True
+					continue
+				if isinstance(result, str):
+					if result.strip().casefold() == normalized_name:
+						return True
+					continue
+				if isinstance(result, dict):
+					name = result.get("name") or result.get("command") or result.get("trigger")
+					if isinstance(name, str) and name.strip().casefold() == normalized_name:
+						return True
+					if result:
+						return True
+					continue
+				if getattr(result, "name", None):
+					name = getattr(result, "name")
+					if isinstance(name, str) and name.strip().casefold() == normalized_name:
+						return True
+					continue
+				if result:
+					return True
 
 		if not attempted_lookup:
 			return False
