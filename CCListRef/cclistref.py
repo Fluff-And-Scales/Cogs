@@ -130,8 +130,8 @@ class CCListRef(commands.Cog):
 			if isinstance(name, str) and name.strip()
 		}
 		rows = [row for row in rows if row["name"].casefold() not in excluded]
-		content, embeds = self._build_message_payload(rows)
-		await self._publish_payload(channel, content, embeds)
+		payloads = self._build_message_payloads(rows)
+		await self._publish_payloads(channel, payloads)
 
 	async def get_output_channel(self, guild: discord.Guild) -> Optional[discord.TextChannel]:
 		channel_id = await self.config.guild(guild).channel_id()
@@ -452,32 +452,30 @@ class CCListRef(commands.Cog):
 		path = target_lower.split("?", 1)[0]
 		return path.endswith(self._IMAGE_EXTENSIONS)
 
-	def _build_message_payload(self, rows: list[dict[str, str]]) -> tuple[str, list[discord.Embed]]:
-		content = f"{self._TITLE}\n{self._NOTE}"
-		embeds: list[discord.Embed] = []
+	def _build_message_payloads(self, rows: list[dict[str, str]]) -> list[tuple[str, list[discord.Embed]]]:
+		header_content = f"{self._TITLE}\n{self._NOTE}"
 
 		if not rows:
-			embeds.append(discord.Embed(title="No Custom Commands", description="No custom commands available."))
-			return content, embeds
+			empty_embed = discord.Embed(title="No Custom Commands", description="No custom commands available.")
+			return [(header_content, [empty_embed])]
 
-		for row in rows[:10]:
+		command_embeds: list[discord.Embed] = []
+		for row in rows:
 			embed = discord.Embed(title=row["name"], description=row["output"])
 			embed.add_field(name="Example", value=row["example"], inline=False)
 			if row["image_url"]:
 				embed.set_image(url=row["image_url"])
-			embeds.append(embed)
+			command_embeds.append(embed)
 
-		if len(rows) > 10:
-			embeds.append(
-				discord.Embed(
-					title="Additional Commands Not Shown",
-					description=f"Showing first 10 commands of {len(rows)} total.",
-				)
-			)
+		payloads: list[tuple[str, list[discord.Embed]]] = []
+		for index in range(0, len(command_embeds), 10):
+			chunk = command_embeds[index:index + 10]
+			content = header_content if index == 0 else f"{self._TITLE} (continued)"
+			payloads.append((content, chunk))
 
-		return content, embeds[:10]
+		return payloads
 
-	async def _publish_payload(self, channel: discord.TextChannel, content: str, embeds: list[discord.Embed]) -> None:
+	async def _publish_payloads(self, channel: discord.TextChannel, payloads: list[tuple[str, list[discord.Embed]]]) -> None:
 		me = channel.guild.me
 		if me is None:
 			return
@@ -492,44 +490,48 @@ class CCListRef(commands.Cog):
 			with contextlib.suppress(discord.NotFound, discord.Forbidden, discord.HTTPException):
 				existing_messages.append(await channel.fetch_message(message_id))
 
-		primary_message = existing_messages[0] if existing_messages else None
-		if primary_message is None:
-			with contextlib.suppress(discord.Forbidden, discord.HTTPException):
-				primary_message = await channel.send(content=content, embeds=embeds)
-
-		if primary_message is None:
-			return
-
-		current_embeds = [embed.to_dict() for embed in primary_message.embeds]
-		target_embeds = [embed.to_dict() for embed in embeds]
-		if primary_message.content != content or current_embeds != target_embeds:
-			try:
-				await primary_message.edit(content=content, embeds=embeds)
-			except (discord.Forbidden, discord.NotFound, discord.HTTPException):
-				replacement_message = None
+		published_ids: list[int] = []
+		for index, (content, embeds) in enumerate(payloads):
+			message = existing_messages[index] if index < len(existing_messages) else None
+			if message is None:
 				with contextlib.suppress(discord.Forbidden, discord.HTTPException):
-					replacement_message = await channel.send(content=content, embeds=embeds)
-				if replacement_message is not None:
-					with contextlib.suppress(discord.Forbidden, discord.NotFound, discord.HTTPException):
-						await primary_message.delete()
-					primary_message = replacement_message
+					message = await channel.send(content=content, embeds=embeds)
+				if message is None:
+					continue
+			else:
+				current_embeds = [embed.to_dict() for embed in message.embeds]
+				target_embeds = [embed.to_dict() for embed in embeds]
+				if message.content != content or current_embeds != target_embeds:
+					try:
+						await message.edit(content=content, embeds=embeds)
+					except (discord.Forbidden, discord.NotFound, discord.HTTPException):
+						replacement_message = None
+						with contextlib.suppress(discord.Forbidden, discord.HTTPException):
+							replacement_message = await channel.send(content=content, embeds=embeds)
+						if replacement_message is not None:
+							with contextlib.suppress(discord.Forbidden, discord.NotFound, discord.HTTPException):
+								await message.delete()
+							message = replacement_message
 
-		for message in existing_messages[1:]:
+			published_ids.append(message.id)
+
+		for message in existing_messages[len(payloads):]:
 			with contextlib.suppress(discord.Forbidden, discord.NotFound, discord.HTTPException):
 				await message.delete()
 
-		await self._delete_legacy_messages(channel, keep_message_id=primary_message.id)
-		await self.config.guild(channel.guild).message_ids.set([primary_message.id])
+		await self._delete_legacy_messages(channel, keep_message_ids=set(published_ids))
+		await self.config.guild(channel.guild).message_ids.set(published_ids)
 
-	async def _delete_legacy_messages(self, channel: discord.TextChannel, keep_message_id: Optional[int] = None) -> None:
+	async def _delete_legacy_messages(self, channel: discord.TextChannel, keep_message_ids: Optional[set[int]] = None) -> None:
 		if self.bot.user is None:
 			return
 
+		keep_message_ids = keep_message_ids or set()
 		with contextlib.suppress(discord.Forbidden, discord.HTTPException):
 			async for message in channel.history(limit=200):
 				if message.author.id != self.bot.user.id:
 					continue
-				if keep_message_id is not None and message.id == keep_message_id:
+				if message.id in keep_message_ids:
 					continue
 				if self._is_cclistref_message(message):
 					with contextlib.suppress(discord.Forbidden, discord.NotFound, discord.HTTPException):
