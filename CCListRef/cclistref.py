@@ -205,14 +205,7 @@ class CCListRef(commands.Cog):
 
 		command_table = await self._get_command_table_from_config(config, guild)
 		if not command_table:
-			command_table = await self._get_command_table_from_methods(customcom, guild)
-		if not command_table:
-			command_table = await self._get_command_table_from_config_scan(config, guild)
-		if not command_table:
 			return []
-
-		active_names = await self._get_active_custom_command_names(customcom, guild)
-		use_active_name_set = bool(active_names)
 
 		row_map: dict[str, dict[str, str]] = {}
 		for command_name, command_data in sorted(command_table.items(), key=lambda item: str(item[0]).casefold()):
@@ -223,17 +216,11 @@ class CCListRef(commands.Cog):
 			if not normalized_name:
 				continue
 
-			normalized_key = normalized_name.casefold()
-			if use_active_name_set:
-				if normalized_key not in active_names:
-					continue
-			else:
-				active_state = await self._is_active_custom_command(customcom, guild, normalized_name)
-				if active_state is False:
-					continue
+			if not await self._is_active_custom_command(customcom, guild, normalized_name):
+				continue
 
 			output_text, image_url = self._extract_output_preview(command_data)
-			row_map[normalized_key] = {
+			row_map[normalized_name.casefold()] = {
 				"name": normalized_name,
 				"example": self._build_command_example(normalized_name, command_data),
 				"output": output_text,
@@ -249,122 +236,24 @@ class CCListRef(commands.Cog):
 			getter = getattr(guild_conf, key, None)
 			if getter is None or not callable(getter):
 				continue
-
 			with contextlib.suppress(Exception):
 				value = getter()
-				if hasattr(value, "all") and callable(getattr(value, "all")):
-					value = value.all()
 				if asyncio.iscoroutine(value):
 					value = await value
 				if isinstance(value, dict) and self._mapping_looks_like_command_table(value):
 					return value
 
-		return {}
-
-	async def _get_command_table_from_methods(self, customcom: Any, guild: discord.Guild) -> dict[Any, Any]:
-		method_names = ("get_commands", "get_ccs", "list_commands", "all_commands")
-		for method_name in method_names:
-			method = getattr(customcom, method_name, None)
-			if method is None:
-				continue
-
-			for args in ((guild,), (guild.id,), tuple()):
-				with contextlib.suppress(Exception):
-					result = method(*args)
-					if asyncio.iscoroutine(result):
-						result = await result
-					table = self._normalize_command_table_result(result)
-					if table:
-						return table
-
-		return {}
-
-	async def _get_command_table_from_config_scan(self, config: Any, guild: discord.Guild) -> dict[Any, Any]:
 		with contextlib.suppress(Exception):
-			guild_data = await config.guild(guild).all()
+			guild_data = await guild_conf.all()
 			command_table = self._find_command_table(guild_data)
 			if isinstance(command_table, dict):
 				return command_table
-		return {}
-
-	def _normalize_command_table_result(self, value: Any) -> dict[Any, Any]:
-		if isinstance(value, dict):
-			return value if self._mapping_looks_like_command_table(value) else {}
-
-		if isinstance(value, (list, tuple, set)):
-			normalized: dict[str, Any] = {}
-			for item in value:
-				if isinstance(item, str) and item.strip():
-					normalized[item.strip()] = {}
-					continue
-				if isinstance(item, dict):
-					name = item.get("name") or item.get("command") or item.get("trigger")
-					if isinstance(name, str) and name.strip():
-						normalized[name.strip()] = item
-					continue
-				name = getattr(item, "name", None)
-				if isinstance(name, str) and name.strip():
-					normalized[name.strip()] = item
-			return normalized
 
 		return {}
 
-	async def _get_active_custom_command_names(self, customcom: Any, guild: discord.Guild) -> set[str]:
-		method_names = (
-			"get_command_names",
-			"get_commands",
-			"get_ccs",
-			"list_commands",
-			"all_commands",
-		)
-
-		for method_name in method_names:
-			method = getattr(customcom, method_name, None)
-			if method is None:
-				continue
-
-			for args in ((guild,), (guild.id,), tuple()):
-				with contextlib.suppress(Exception):
-					result = method(*args)
-					if asyncio.iscoroutine(result):
-						result = await result
-					names = self._extract_command_names_from_result(result)
-					if names:
-						return names
-
-		return set()
-
-	def _extract_command_names_from_result(self, result: Any) -> set[str]:
-		names: set[str] = set()
-		if isinstance(result, dict):
-			for key in result:
-				if isinstance(key, str) and key.strip():
-					names.add(key.strip().casefold())
-			return names
-
-		if isinstance(result, (list, tuple, set)):
-			for item in result:
-				if isinstance(item, str) and item.strip():
-					names.add(item.strip().casefold())
-					continue
-				item_name = getattr(item, "name", None)
-				if isinstance(item_name, str) and item_name.strip():
-					names.add(item_name.strip().casefold())
-					continue
-				if isinstance(item, dict):
-					for key in ("name", "command", "trigger"):
-						value = item.get(key)
-						if isinstance(value, str) and value.strip():
-							names.add(value.strip().casefold())
-							break
-			return names
-
-		return names
-
-	async def _is_active_custom_command(self, customcom: Any, guild: discord.Guild, command_name: str) -> Optional[bool]:
+	async def _is_active_custom_command(self, customcom: Any, guild: discord.Guild, command_name: str) -> bool:
 		lookup_methods = ("get_command", "get_cc", "get_custom_command", "get_customcom")
 		attempted_lookup = False
-		normalized_name = command_name.casefold()
 
 		for method_name in lookup_methods:
 			method = getattr(customcom, method_name, None)
@@ -372,58 +261,22 @@ class CCListRef(commands.Cog):
 				continue
 
 			attempted_lookup = True
-			call_patterns = (
-				((guild, command_name), {}),
-				((command_name, guild), {}),
-				((command_name,), {}),
-				(tuple(), {"guild": guild, "command": command_name}),
-				(tuple(), {"guild": guild, "command_name": command_name}),
-				(tuple(), {"ctx_guild": guild, "command": command_name}),
-			)
+			result: Any = None
+			with contextlib.suppress(Exception):
+				result = method(guild, command_name)
 
-			for args, kwargs in call_patterns:
-				result: Any = None
-				called = False
+			if result is None:
 				with contextlib.suppress(Exception):
-					result = method(*args, **kwargs)
-					called = True
+					result = method(command_name)
 
-				if not called:
-					continue
+			if asyncio.iscoroutine(result):
+				with contextlib.suppress(Exception):
+					result = await result
 
-				if asyncio.iscoroutine(result):
-					with contextlib.suppress(Exception):
-						result = await result
+			if result:
+				return True
 
-				if result is None:
-					continue
-				if isinstance(result, bool):
-					if result:
-						return True
-					continue
-				if isinstance(result, str):
-					if result.strip().casefold() == normalized_name:
-						return True
-					continue
-				if isinstance(result, dict):
-					name = result.get("name") or result.get("command") or result.get("trigger")
-					if isinstance(name, str) and name.strip().casefold() == normalized_name:
-						return True
-					if result:
-						return True
-					continue
-				if getattr(result, "name", None):
-					name = getattr(result, "name")
-					if isinstance(name, str) and name.strip().casefold() == normalized_name:
-						return True
-					continue
-				if result:
-					return True
-
-		if not attempted_lookup:
-			return None
-
-		return None
+		return not attempted_lookup
 
 	def _find_command_table(self, value: Any) -> Optional[dict[Any, Any]]:
 		candidates = self._find_command_tables(value)
@@ -439,6 +292,9 @@ class CCListRef(commands.Cog):
 				candidate = value.get(key)
 				if isinstance(candidate, dict) and self._mapping_looks_like_command_table(candidate):
 					candidates.append(candidate)
+
+			if self._mapping_looks_like_command_table(value):
+				candidates.append(value)
 
 			for nested in value.values():
 				candidates.extend(self._find_command_tables(nested))
