@@ -503,8 +503,16 @@ class CCListRef(commands.Cog):
 		current_embeds = [embed.to_dict() for embed in primary_message.embeds]
 		target_embeds = [embed.to_dict() for embed in embeds]
 		if primary_message.content != content or current_embeds != target_embeds:
-			with contextlib.suppress(discord.Forbidden, discord.NotFound, discord.HTTPException):
+			try:
 				await primary_message.edit(content=content, embeds=embeds)
+			except (discord.Forbidden, discord.NotFound, discord.HTTPException):
+				replacement_message = None
+				with contextlib.suppress(discord.Forbidden, discord.HTTPException):
+					replacement_message = await channel.send(content=content, embeds=embeds)
+				if replacement_message is not None:
+					with contextlib.suppress(discord.Forbidden, discord.NotFound, discord.HTTPException):
+						await primary_message.delete()
+					primary_message = replacement_message
 
 		for message in existing_messages[1:]:
 			with contextlib.suppress(discord.Forbidden, discord.NotFound, discord.HTTPException):
