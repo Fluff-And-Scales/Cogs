@@ -163,6 +163,9 @@ class CCListRef(commands.Cog):
 			if not normalized_name:
 				continue
 
+			if not await self._is_active_custom_command(customcom, guild, normalized_name):
+				continue
+
 			output_text, image_url = self._extract_output_preview(command_data)
 			row_map[normalized_name.casefold()] = {
 				"name": normalized_name,
@@ -194,6 +197,33 @@ class CCListRef(commands.Cog):
 				return command_table
 
 		return {}
+
+	async def _is_active_custom_command(self, customcom: Any, guild: discord.Guild, command_name: str) -> bool:
+		lookup_methods = ("get_command", "get_cc", "get_custom_command", "get_customcom")
+		attempted_lookup = False
+
+		for method_name in lookup_methods:
+			method = getattr(customcom, method_name, None)
+			if method is None:
+				continue
+
+			attempted_lookup = True
+			result: Any = None
+			with contextlib.suppress(Exception):
+				result = method(guild, command_name)
+
+			if result is None:
+				with contextlib.suppress(Exception):
+					result = method(command_name)
+
+			if asyncio.iscoroutine(result):
+				with contextlib.suppress(Exception):
+					result = await result
+
+			if result:
+				return True
+
+		return not attempted_lookup
 
 	def _find_command_table(self, value: Any) -> Optional[dict[Any, Any]]:
 		candidates = self._find_command_tables(value)
