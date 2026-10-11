@@ -207,6 +207,9 @@ class CCListRef(commands.Cog):
 		if not command_table:
 			return []
 
+		active_names = await self._get_active_custom_command_names(customcom, guild)
+		use_active_name_set = bool(active_names)
+
 		row_map: dict[str, dict[str, str]] = {}
 		for command_name, command_data in sorted(command_table.items(), key=lambda item: str(item[0]).casefold()):
 			if not isinstance(command_name, str):
@@ -216,11 +219,15 @@ class CCListRef(commands.Cog):
 			if not normalized_name:
 				continue
 
-			if not await self._is_active_custom_command(customcom, guild, normalized_name):
+			normalized_key = normalized_name.casefold()
+			if use_active_name_set:
+				if normalized_key not in active_names:
+					continue
+			elif not await self._is_active_custom_command(customcom, guild, normalized_name):
 				continue
 
 			output_text, image_url = self._extract_output_preview(command_data)
-			row_map[normalized_name.casefold()] = {
+			row_map[normalized_key] = {
 				"name": normalized_name,
 				"example": self._build_command_example(normalized_name, command_data),
 				"output": output_text,
@@ -247,6 +254,58 @@ class CCListRef(commands.Cog):
 					return value
 
 		return {}
+
+	async def _get_active_custom_command_names(self, customcom: Any, guild: discord.Guild) -> set[str]:
+		method_names = (
+			"get_command_names",
+			"get_commands",
+			"get_ccs",
+			"list_commands",
+			"all_commands",
+		)
+
+		for method_name in method_names:
+			method = getattr(customcom, method_name, None)
+			if method is None:
+				continue
+
+			for args in ((guild,), (guild.id,), tuple()):
+				with contextlib.suppress(Exception):
+					result = method(*args)
+					if asyncio.iscoroutine(result):
+						result = await result
+					names = self._extract_command_names_from_result(result)
+					if names:
+						return names
+
+		return set()
+
+	def _extract_command_names_from_result(self, result: Any) -> set[str]:
+		names: set[str] = set()
+		if isinstance(result, dict):
+			for key in result:
+				if isinstance(key, str) and key.strip():
+					names.add(key.strip().casefold())
+			return names
+
+		if isinstance(result, (list, tuple, set)):
+			for item in result:
+				if isinstance(item, str) and item.strip():
+					names.add(item.strip().casefold())
+					continue
+				item_name = getattr(item, "name", None)
+				if isinstance(item_name, str) and item_name.strip():
+					names.add(item_name.strip().casefold())
+					continue
+				if isinstance(item, dict):
+					for key in ("name", "command", "trigger"):
+						value = item.get(key)
+						if isinstance(value, str) and value.strip():
+							names.add(value.strip().casefold())
+							break
+			return names
+
+		return names
 
 	async def _is_active_custom_command(self, customcom: Any, guild: discord.Guild, command_name: str) -> bool:
 		lookup_methods = ("get_command", "get_cc", "get_custom_command", "get_customcom")
