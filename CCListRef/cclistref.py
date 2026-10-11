@@ -293,9 +293,6 @@ class CCListRef(commands.Cog):
 				if isinstance(candidate, dict) and self._mapping_looks_like_command_table(candidate):
 					candidates.append(candidate)
 
-			if self._mapping_looks_like_command_table(value):
-				candidates.append(value)
-
 			for nested in value.values():
 				candidates.extend(self._find_command_tables(nested))
 
