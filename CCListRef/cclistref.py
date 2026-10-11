@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
+import json
 import re
 import string
 from typing import Any, Optional
@@ -33,7 +35,7 @@ class CCListRef(commands.Cog):
 	"""Maintain a posted reference list for CustomCom commands."""
 
 	_CUSTOMCOM_COG_NAMES = ("CustomCom", "CustomCommands", "customcom")
-	_REFRESH_INTERVAL = 60
+	_REFRESH_INTERVAL = 600
 	_TITLE = "Command List"
 	_NOTE = "An '!' has to be in front of all commands for them to work."
 	_VARIABLE_RE = re.compile(r"\{[^{}]+\}")
@@ -85,9 +87,11 @@ class CCListRef(commands.Cog):
 	def __init__(self, bot: commands.Bot):
 		self.bot = bot
 		self.config = Config.get_conf(self, identifier=948275610234, force_registration=True)
-		self.config.register_guild(channel_id=None, message_ids=[], excluded_commands=[])
+		self.config.register_guild(channel_id=None, message_ids=[], excluded_commands=[], last_snapshot_hash="")
 		self._refresh_task: Optional[asyncio.Task] = None
 		self._preview_formatter = _PreviewFormatter()
+		self._pending_refresh_guild_ids: set[int] = set()
+		self._refresh_event = asyncio.Event()
 
 	async def cog_load(self) -> None:
 		self._refresh_task = asyncio.create_task(self._refresh_loop())
@@ -113,12 +117,47 @@ class CCListRef(commands.Cog):
 				await asyncio.wait_for(self.bot.wait_until_ready(), timeout=30)
 
 		while True:
-			for guild in self.bot.guilds:
+			guilds_to_refresh: list[discord.Guild] = []
+			try:
+				await asyncio.wait_for(self._refresh_event.wait(), timeout=self._REFRESH_INTERVAL)
+			except asyncio.TimeoutError:
+				guilds_to_refresh = list(self.bot.guilds)
+			else:
+				self._refresh_event.clear()
+				pending_ids = set(self._pending_refresh_guild_ids)
+				self._pending_refresh_guild_ids.clear()
+				guilds_to_refresh = [guild for guild in self.bot.guilds if guild.id in pending_ids]
+
+			for guild in guilds_to_refresh:
 				with contextlib.suppress(Exception):
 					await self.refresh_guild(guild)
-			await asyncio.sleep(self._REFRESH_INTERVAL)
 
-	async def refresh_guild(self, guild: discord.Guild) -> None:
+	def _request_refresh(self, guild: discord.Guild) -> None:
+		self._pending_refresh_guild_ids.add(guild.id)
+		self._refresh_event.set()
+
+	def _is_customcom_management_command(self, ctx: commands.Context) -> bool:
+		command = getattr(ctx, "command", None)
+		if command is None:
+			return False
+
+		qualified_name = (command.qualified_name or "").casefold().strip()
+		root_name = qualified_name.split(maxsplit=1)[0] if qualified_name else ""
+		if root_name in {"cc", "customcom", "customcommands"}:
+			return True
+
+		cog_name = (getattr(command, "cog_name", "") or "").casefold()
+		return cog_name in {name.casefold() for name in self._CUSTOMCOM_COG_NAMES}
+
+	@commands.Cog.listener()
+	async def on_command_completion(self, ctx: commands.Context) -> None:
+		if ctx.guild is None:
+			return
+		if not self._is_customcom_management_command(ctx):
+			return
+		self._request_refresh(ctx.guild)
+
+	async def refresh_guild(self, guild: discord.Guild, *, force: bool = False) -> None:
 		channel = await self.get_output_channel(guild)
 		if channel is None:
 			return
@@ -131,7 +170,21 @@ class CCListRef(commands.Cog):
 		}
 		rows = [row for row in rows if row["name"].casefold() not in excluded]
 		payloads = self._build_message_payloads(rows)
-		await self._publish_payloads(channel, payloads)
+		snapshot_hash = self._compute_snapshot_hash(payloads)
+		config_guild = self.config.guild(guild)
+		last_snapshot_hash = await config_guild.last_snapshot_hash()
+
+		if (
+			not force
+			and snapshot_hash == last_snapshot_hash
+			and await self._managed_messages_match(channel, len(payloads))
+		):
+			return
+
+		published_ids = await self._publish_payloads(channel, payloads)
+		if published_ids:
+			await config_guild.message_ids.set(published_ids)
+			await config_guild.last_snapshot_hash.set(snapshot_hash)
 
 	async def get_output_channel(self, guild: discord.Guild) -> Optional[discord.TextChannel]:
 		channel_id = await self.config.guild(guild).channel_id()
@@ -475,14 +528,36 @@ class CCListRef(commands.Cog):
 
 		return payloads
 
-	async def _publish_payloads(self, channel: discord.TextChannel, payloads: list[tuple[str, list[discord.Embed]]]) -> None:
+	def _compute_snapshot_hash(self, payloads: list[tuple[str, list[discord.Embed]]]) -> str:
+		normalized_payloads = [
+			{
+				"content": content,
+				"embeds": [embed.to_dict() for embed in embeds],
+			}
+			for content, embeds in payloads
+		]
+		serialized = json.dumps(normalized_payloads, sort_keys=True, separators=(",", ":"))
+		return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+	async def _managed_messages_match(self, channel: discord.TextChannel, expected_count: int) -> bool:
+		stored_ids = await self.config.guild(channel.guild).message_ids()
+		if len(stored_ids) != expected_count:
+			return False
+		for message_id in stored_ids:
+			try:
+				await channel.fetch_message(message_id)
+			except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+				return False
+		return True
+
+	async def _publish_payloads(self, channel: discord.TextChannel, payloads: list[tuple[str, list[discord.Embed]]]) -> list[int]:
 		me = channel.guild.me
 		if me is None:
-			return
+			return []
 
 		permissions = channel.permissions_for(me)
 		if not permissions.send_messages:
-			return
+			return []
 
 		stored_ids = await self.config.guild(channel.guild).message_ids()
 		existing_messages: list[discord.Message] = []
@@ -519,8 +594,7 @@ class CCListRef(commands.Cog):
 			with contextlib.suppress(discord.Forbidden, discord.NotFound, discord.HTTPException):
 				await message.delete()
 
-		await self._delete_legacy_messages(channel, keep_message_ids=set(published_ids))
-		await self.config.guild(channel.guild).message_ids.set(published_ids)
+		return published_ids
 
 	async def _delete_legacy_messages(self, channel: discord.TextChannel, keep_message_ids: Optional[set[int]] = None) -> None:
 		if self.bot.user is None:
@@ -592,11 +666,13 @@ class CCListRef(commands.Cog):
 		old_message_ids = await self.config.guild(ctx.guild).message_ids()
 		await self.config.guild(ctx.guild).channel_id.set(channel.id)
 		await self.config.guild(ctx.guild).message_ids.set([])
+		await self.config.guild(ctx.guild).last_snapshot_hash.set("")
 
 		if old_channel is not None and old_channel.id != channel.id:
 			await self._delete_managed_messages(old_channel, old_message_ids)
 
-		await self.refresh_guild(ctx.guild)
+		await self._delete_legacy_messages(channel)
+		await self.refresh_guild(ctx.guild, force=True)
 		await ctx.send(f"CCListRef will post in {channel.mention}.")
 
 	@cclistrefset.command(name="clear")
@@ -610,6 +686,7 @@ class CCListRef(commands.Cog):
 
 		await self.config.guild(ctx.guild).channel_id.clear()
 		await self.config.guild(ctx.guild).message_ids.set([])
+		await self.config.guild(ctx.guild).last_snapshot_hash.set("")
 		await ctx.send("CCListRef output channel cleared.")
 
 	@cclistrefset.command(name="show")
@@ -643,7 +720,7 @@ class CCListRef(commands.Cog):
 			if command_name.casefold() not in {name.casefold() for name in excluded_commands}:
 				excluded_commands.append(command_name)
 
-		await self.refresh_guild(ctx.guild)
+		self._request_refresh(ctx.guild)
 		await ctx.send(f"Excluded `{command_name}` from the CCListRef list.")
 
 	@cclistrefset_exclude.command(name="remove")
@@ -657,7 +734,7 @@ class CCListRef(commands.Cog):
 			excluded_commands[:] = remaining
 
 		if updated:
-			await self.refresh_guild(ctx.guild)
+			self._request_refresh(ctx.guild)
 			await ctx.send(f"Removed `{command_name}` from the exclusion list.")
 			return
 
@@ -677,8 +754,20 @@ class CCListRef(commands.Cog):
 	@cclistrefset.command(name="refresh")
 	async def cclistrefset_refresh(self, ctx: commands.Context) -> None:
 		"""Force an immediate refresh of the published list."""
-		await self.refresh_guild(ctx.guild)
+		await self.refresh_guild(ctx.guild, force=True)
 		await ctx.send("CCListRef refreshed.")
+
+	@cclistrefset.command(name="cleanup")
+	async def cclistrefset_cleanup(self, ctx: commands.Context) -> None:
+		"""Remove untracked legacy CCListRef messages from the configured channel."""
+		channel = await self.get_output_channel(ctx.guild)
+		if channel is None:
+			await ctx.send("CCListRef does not have an output channel configured.")
+			return
+
+		stored_ids = await self.config.guild(ctx.guild).message_ids()
+		await self._delete_legacy_messages(channel, keep_message_ids=set(stored_ids))
+		await ctx.send("CCListRef legacy message cleanup complete.")
 
 
 async def setup(bot: commands.Bot):
