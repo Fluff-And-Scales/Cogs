@@ -150,12 +150,7 @@ class CCListRef(commands.Cog):
 		if config is None:
 			return []
 
-		try:
-			guild_data = await config.guild(guild).all()
-		except Exception:
-			return []
-
-		command_table = self._find_command_table(guild_data)
+		command_table = await self._get_command_table_from_config(config, guild)
 		if not command_table:
 			return []
 
@@ -177,6 +172,28 @@ class CCListRef(commands.Cog):
 			}
 
 		return list(row_map.values())
+
+	async def _get_command_table_from_config(self, config: Any, guild: discord.Guild) -> dict[Any, Any]:
+		guild_conf = config.guild(guild)
+
+		for key in self._COMMAND_CONTAINER_KEYS:
+			getter = getattr(guild_conf, key, None)
+			if getter is None or not callable(getter):
+				continue
+			with contextlib.suppress(Exception):
+				value = getter()
+				if asyncio.iscoroutine(value):
+					value = await value
+				if isinstance(value, dict) and self._mapping_looks_like_command_table(value):
+					return value
+
+		with contextlib.suppress(Exception):
+			guild_data = await guild_conf.all()
+			command_table = self._find_command_table(guild_data)
+			if isinstance(command_table, dict):
+				return command_table
+
+		return {}
 
 	def _find_command_table(self, value: Any) -> Optional[dict[Any, Any]]:
 		candidates = self._find_command_tables(value)
