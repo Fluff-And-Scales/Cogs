@@ -130,8 +130,8 @@ class CCListRef(commands.Cog):
 			if isinstance(name, str) and name.strip()
 		}
 		rows = [row for row in rows if row["name"].casefold() not in excluded]
-		specs = self._build_message_specs(rows)
-		await self._publish_specs(channel, specs)
+		content, embeds = self._build_message_payload(rows)
+		await self._publish_payload(channel, content, embeds)
 
 	async def get_output_channel(self, guild: discord.Guild) -> Optional[discord.TextChannel]:
 		channel_id = await self.config.guild(guild).channel_id()
@@ -422,25 +422,32 @@ class CCListRef(commands.Cog):
 		path = target_lower.split("?", 1)[0]
 		return path.endswith(self._IMAGE_EXTENSIONS)
 
-	def _build_message_specs(self, rows: list[dict[str, str]]) -> list[dict[str, Any]]:
-		header_embed = discord.Embed(title=self._TITLE, description=self._NOTE)
-		specs: list[dict[str, Any]] = [{"content": None, "embed": header_embed}]
+	def _build_message_payload(self, rows: list[dict[str, str]]) -> tuple[str, list[discord.Embed]]:
+		content = f"{self._TITLE}\n{self._NOTE}"
+		embeds: list[discord.Embed] = []
 
 		if not rows:
-			empty_embed = discord.Embed(title="No Custom Commands", description="No custom commands available.")
-			specs.append({"content": None, "embed": empty_embed})
-			return specs
+			embeds.append(discord.Embed(title="No Custom Commands", description="No custom commands available."))
+			return content, embeds
 
-		for row in rows:
+		for row in rows[:10]:
 			embed = discord.Embed(title=row["name"], description=row["output"])
 			embed.add_field(name="Example", value=row["example"], inline=False)
 			if row["image_url"]:
 				embed.set_image(url=row["image_url"])
-			specs.append({"content": None, "embed": embed})
+			embeds.append(embed)
 
-		return specs
+		if len(rows) > 10:
+			embeds.append(
+				discord.Embed(
+					title="Additional Commands Not Shown",
+					description=f"Showing first 10 commands of {len(rows)} total.",
+				)
+			)
 
-	async def _publish_specs(self, channel: discord.TextChannel, specs: list[dict[str, Any]]) -> None:
+		return content, embeds[:10]
+
+	async def _publish_payload(self, channel: discord.TextChannel, content: str, embeds: list[discord.Embed]) -> None:
 		me = channel.guild.me
 		if me is None:
 			return
@@ -455,29 +462,59 @@ class CCListRef(commands.Cog):
 			with contextlib.suppress(discord.NotFound, discord.Forbidden, discord.HTTPException):
 				existing_messages.append(await channel.fetch_message(message_id))
 
-		published_ids: list[int] = []
-		for index, spec in enumerate(specs):
-			content = spec.get("content")
-			embed = spec.get("embed")
-			if index < len(existing_messages):
-				message = existing_messages[index]
-				message_embed = message.embeds[0].to_dict() if message.embeds else None
-				spec_embed = embed.to_dict() if isinstance(embed, discord.Embed) else None
-				if message.content != (content or "") or message_embed != spec_embed:
-					with contextlib.suppress(discord.Forbidden, discord.NotFound, discord.HTTPException):
-						await message.edit(content=content, embed=embed)
-				published_ids.append(message.id)
-				continue
-
+		primary_message = existing_messages[0] if existing_messages else None
+		if primary_message is None:
 			with contextlib.suppress(discord.Forbidden, discord.HTTPException):
-				message = await channel.send(content=content, embed=embed)
-				published_ids.append(message.id)
+				primary_message = await channel.send(content=content, embeds=embeds)
 
-		for message in existing_messages[len(specs):]:
+		if primary_message is None:
+			return
+
+		current_embeds = [embed.to_dict() for embed in primary_message.embeds]
+		target_embeds = [embed.to_dict() for embed in embeds]
+		if primary_message.content != content or current_embeds != target_embeds:
+			with contextlib.suppress(discord.Forbidden, discord.NotFound, discord.HTTPException):
+				await primary_message.edit(content=content, embeds=embeds)
+
+		for message in existing_messages[1:]:
 			with contextlib.suppress(discord.Forbidden, discord.NotFound, discord.HTTPException):
 				await message.delete()
 
-		await self.config.guild(channel.guild).message_ids.set(published_ids)
+		await self._delete_legacy_messages(channel, keep_message_id=primary_message.id)
+		await self.config.guild(channel.guild).message_ids.set([primary_message.id])
+
+	async def _delete_legacy_messages(self, channel: discord.TextChannel, keep_message_id: Optional[int] = None) -> None:
+		if self.bot.user is None:
+			return
+
+		with contextlib.suppress(discord.Forbidden, discord.HTTPException):
+			async for message in channel.history(limit=200):
+				if message.author.id != self.bot.user.id:
+					continue
+				if keep_message_id is not None and message.id == keep_message_id:
+					continue
+				if self._is_cclistref_message(message):
+					with contextlib.suppress(discord.Forbidden, discord.NotFound, discord.HTTPException):
+						await message.delete()
+
+	def _is_cclistref_message(self, message: discord.Message) -> bool:
+		content = (message.content or "").strip()
+		if content.startswith(self._TITLE):
+			return True
+		if self._NOTE in content:
+			return True
+
+		for embed in message.embeds:
+			title = (embed.title or "").strip()
+			description = (embed.description or "").strip()
+			if title in {self._TITLE, "No Custom Commands", "Additional Commands Not Shown"}:
+				return True
+			if description == self._NOTE:
+				return True
+			if any((field.name or "").strip() == "Example" for field in embed.fields):
+				return True
+
+		return False
 
 	async def _delete_managed_messages(self, channel: discord.TextChannel, message_ids: list[int]) -> None:
 		for message_id in message_ids:
@@ -529,6 +566,7 @@ class CCListRef(commands.Cog):
 		old_message_ids = await self.config.guild(ctx.guild).message_ids()
 		if old_channel is not None:
 			await self._delete_managed_messages(old_channel, old_message_ids)
+			await self._delete_legacy_messages(old_channel)
 
 		await self.config.guild(ctx.guild).channel_id.clear()
 		await self.config.guild(ctx.guild).message_ids.set([])
