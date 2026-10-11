@@ -332,7 +332,10 @@ class CCListRef(commands.Cog):
 			if result:
 				return True
 
-		return not attempted_lookup
+		if not attempted_lookup:
+			return False
+
+		return False
 
 	def _find_command_table(self, value: Any) -> Optional[dict[Any, Any]]:
 		candidates = self._find_command_tables(value)
