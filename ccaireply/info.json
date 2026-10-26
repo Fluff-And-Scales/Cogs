@@ -1,0 +1,8 @@
+{
+  "author": ["GitHub Copilot"],
+  "description": "AI-powered chatbot replies when Redbot is mentioned by mention, name, or reply.",
+  "install_msg": "CCAIReply loaded.",
+  "short": "AI chat reply cog for mentions and replies.",
+  "tags": ["redbot", "ai", "chat", "llm"],
+  "type": "COG"
+}
