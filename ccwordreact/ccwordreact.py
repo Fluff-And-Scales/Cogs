@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import copy
 import contextlib
 import re
@@ -291,6 +292,38 @@ class CCWordReact(commands.Cog):
 
 		fake_message = copy.copy(message)
 		fake_message.content = f"{prefix}{command_name}"
+
+		customcom = self._get_customcom_cog()
+		if customcom is not None:
+			for method_name in (
+				"on_message_without_command",
+				"on_message",
+				"check_cc",
+				"check_ccs",
+				"process_cc",
+				"handle_cc",
+				"send_cc",
+			):
+				method = getattr(customcom, method_name, None)
+				if method is None or not callable(method):
+					continue
+
+				result: Any = None
+				called = False
+				for args, kwargs in (((fake_message,), {}), (tuple(), {"message": fake_message})):
+					with contextlib.suppress(Exception):
+						result = method(*args, **kwargs)
+						called = True
+						break
+
+				if not called:
+					continue
+
+				if asyncio.iscoroutine(result):
+					with contextlib.suppress(Exception):
+						await result
+				return
+
 		await self.bot.process_commands(fake_message)
 
 	@commands.Cog.listener()
