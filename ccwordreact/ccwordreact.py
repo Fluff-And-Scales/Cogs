@@ -3,6 +3,8 @@ from __future__ import annotations
 import copy
 import contextlib
 import re
+import time
+from collections import defaultdict
 from typing import Any, Optional
 
 import discord
@@ -13,11 +15,14 @@ class CCWordReact(commands.Cog):
 	"""Run custom commands when a specific user says a specific word."""
 
 	_CUSTOMCOM_COG_NAMES = ("CustomCom", "CustomCommands", "customcom")
+	_TRIGGER_WINDOW_SECONDS = 10
+	_MARKDOWN_IMAGE_RE = re.compile(r"!\[[^\]]*\]\s*\((https?://[^)\s]+)\)", re.IGNORECASE)
 
 	def __init__(self, bot: commands.Bot):
 		self.bot = bot
 		self.config = Config.get_conf(self, identifier=853217640112, force_registration=True)
 		self.config.register_guild(triggers=[])
+		self._pending_trigger_responses: dict[int, list[float]] = defaultdict(list)
 
 	def _get_customcom_cog(self) -> Optional[Any]:
 		for name in self._CUSTOMCOM_COG_NAMES:
@@ -108,7 +113,55 @@ class CCWordReact(commands.Cog):
 		pattern = rf"(?<!\w){re.escape(word)}(?!\w)"
 		return re.search(pattern, content, flags=re.IGNORECASE) is not None
 
+	def _mark_triggered_channel(self, channel_id: int) -> None:
+		now = time.monotonic()
+		expiry = now + self._TRIGGER_WINDOW_SECONDS
+		entries = self._pending_trigger_responses[channel_id]
+		entries.append(expiry)
+
+	def _consume_triggered_channel(self, channel_id: int) -> bool:
+		now = time.monotonic()
+		entries = self._pending_trigger_responses.get(channel_id, [])
+		entries = [expiry for expiry in entries if expiry >= now]
+		if not entries:
+			self._pending_trigger_responses.pop(channel_id, None)
+			return False
+
+		entries.pop(0)
+		if entries:
+			self._pending_trigger_responses[channel_id] = entries
+		else:
+			self._pending_trigger_responses.pop(channel_id, None)
+		return True
+
+	def _sanitize_markdown_image_text(self, content: str) -> tuple[Optional[str], bool]:
+		if "![" not in content:
+			return content, False
+
+		cleaned = self._MARKDOWN_IMAGE_RE.sub("", content)
+		cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
+		cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+		if cleaned == content:
+			return content, False
+		return (cleaned if cleaned else None), True
+
+	async def _maybe_sanitize_trigger_response(self, message: discord.Message) -> None:
+		if not self._consume_triggered_channel(message.channel.id):
+			return
+
+		new_content, changed = self._sanitize_markdown_image_text(message.content or "")
+		if not changed:
+			return
+
+		try:
+			await message.edit(content=new_content)
+		except (discord.Forbidden, discord.NotFound, discord.HTTPException):
+			if new_content is None and not message.embeds and not message.attachments:
+				with contextlib.suppress(discord.Forbidden, discord.NotFound, discord.HTTPException):
+					await message.delete()
+
 	async def _run_custom_command(self, message: discord.Message, command_name: str) -> None:
+		self._mark_triggered_channel(message.channel.id)
 		prefixes = self.bot.get_prefix(message)
 		if hasattr(prefixes, "__await__"):
 			prefixes = await prefixes
@@ -124,7 +177,12 @@ class CCWordReact(commands.Cog):
 
 	@commands.Cog.listener()
 	async def on_message(self, message: discord.Message) -> None:
-		if message.guild is None or message.author.bot:
+		if message.guild is None:
+			return
+
+		if message.author.bot:
+			if self.bot.user is not None and message.author.id == self.bot.user.id:
+				await self._maybe_sanitize_trigger_response(message)
 			return
 
 		triggers = await self.config.guild(message.guild).triggers()
