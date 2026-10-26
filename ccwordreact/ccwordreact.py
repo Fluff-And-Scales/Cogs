@@ -115,6 +115,15 @@ class CCWordReact(commands.Cog):
 		pattern = rf"(?<!\w){re.escape(word)}(?!\w)"
 		return re.search(pattern, content, flags=re.IGNORECASE) is not None
 
+	def _trigger_matches_user(self, trigger: dict[str, Any], user_id: int) -> bool:
+		trigger_user_id = trigger.get("user_id")
+		if isinstance(trigger_user_id, int):
+			return trigger_user_id == user_id
+		if isinstance(trigger_user_id, str):
+			with contextlib.suppress(ValueError):
+				return int(trigger_user_id.strip()) == user_id
+		return False
+
 	def _mark_triggered_channel(self, channel_id: int) -> None:
 		now = time.monotonic()
 		expiry = now + self._TRIGGER_WINDOW_SECONDS
@@ -248,7 +257,7 @@ class CCWordReact(commands.Cog):
 			return
 
 		for trigger in triggers:
-			if trigger.get("user_id") != message.author.id:
+			if not self._trigger_matches_user(trigger, message.author.id):
 				continue
 
 			word = trigger.get("word", "").strip()
@@ -298,9 +307,10 @@ class CCWordReact(commands.Cog):
 		async with self.config.guild(ctx.guild).triggers() as triggers:
 			for existing in triggers:
 				if (
-					existing.get("user_id") == user.id
+					self._trigger_matches_user(existing, user.id)
 					and str(existing.get("word", "")).casefold() == word.casefold()
 				):
+					existing["user_id"] = user.id
 					existing["command_name"] = command_name
 					break
 			else:
@@ -319,7 +329,7 @@ class CCWordReact(commands.Cog):
 			remaining = []
 			for trigger in triggers:
 				if (
-					trigger.get("user_id") == user.id
+					self._trigger_matches_user(trigger, user.id)
 					and str(trigger.get("word", "")).casefold() == word.casefold()
 				):
 					removed = True
