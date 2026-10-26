@@ -115,6 +115,36 @@ class CCWordReact(commands.Cog):
 		pattern = rf"(?<!\w){re.escape(word)}(?!\w)"
 		return re.search(pattern, content, flags=re.IGNORECASE) is not None
 
+	def _resolve_member(self, guild: discord.Guild, user_ref: str) -> Optional[discord.Member]:
+		candidate = user_ref.strip()
+		if not candidate:
+			return None
+
+		mention_match = re.fullmatch(r"<@!?(\d+)>", candidate)
+		if mention_match:
+			member = guild.get_member(int(mention_match.group(1)))
+			if member is not None:
+				return member
+
+		if candidate.isdigit():
+			member = guild.get_member(int(candidate))
+			if member is not None:
+				return member
+
+		member = guild.get_member_named(candidate)
+		if member is not None:
+			return member
+
+		normalized = candidate.casefold()
+		for guild_member in guild.members:
+			display_name = (guild_member.display_name or "").casefold()
+			username = (guild_member.name or "").casefold()
+			global_name = (getattr(guild_member, "global_name", None) or "").casefold()
+			if normalized in {display_name, username, global_name}:
+				return guild_member
+
+		return None
+
 	def _trigger_matches_user(self, trigger: dict[str, Any], user_id: int) -> bool:
 		trigger_user_id = trigger.get("user_id")
 		if isinstance(trigger_user_id, int):
@@ -283,11 +313,16 @@ class CCWordReact(commands.Cog):
 	async def ccwordreactset_add(
 		self,
 		ctx: commands.Context,
-		user: discord.Member,
+		user_ref: str,
 		word: str,
 		command_name: str,
 	) -> None:
 		"""Add a trigger: when <user> says <word>, run <command_name>."""
+		user = self._resolve_member(ctx.guild, user_ref)
+		if user is None:
+			await ctx.send(f"Could not find a member matching `{user_ref}`.")
+			return
+
 		word = word.strip()
 		command_name = command_name.strip()
 		if not word or not command_name:
@@ -321,8 +356,13 @@ class CCWordReact(commands.Cog):
 		)
 
 	@ccwordreactset.command(name="remove")
-	async def ccwordreactset_remove(self, ctx: commands.Context, user: discord.Member, word: str) -> None:
+	async def ccwordreactset_remove(self, ctx: commands.Context, user_ref: str, word: str) -> None:
 		"""Remove a trigger by user and word."""
+		user = self._resolve_member(ctx.guild, user_ref)
+		if user is None:
+			await ctx.send(f"Could not find a member matching `{user_ref}`.")
+			return
+
 		word = word.strip()
 		removed = False
 		async with self.config.guild(ctx.guild).triggers() as triggers:
@@ -355,7 +395,12 @@ class CCWordReact(commands.Cog):
 			user_id = trigger.get("user_id")
 			word = str(trigger.get("word", "")).strip()
 			command_name = str(trigger.get("command_name", "")).strip()
-			member = ctx.guild.get_member(user_id) if isinstance(user_id, int) else None
+			member: Optional[discord.Member] = None
+			if isinstance(user_id, int):
+				member = ctx.guild.get_member(user_id)
+			elif isinstance(user_id, str):
+				with contextlib.suppress(ValueError):
+					member = ctx.guild.get_member(int(user_id.strip()))
 			user_display = member.mention if member is not None else f"UserID {user_id}"
 			lines.append(f"- {user_display} -> `{word}` => `{command_name}`")
 
