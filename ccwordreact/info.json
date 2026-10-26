@@ -1,0 +1,8 @@
+{
+  "author": ["GitHub Copilot"],
+  "description": "Run a custom command when a specified user says a specified word.",
+  "install_msg": "CCWordReact loaded.",
+  "short": "Trigger custom commands from user word matches.",
+  "tags": ["redbot", "customcom", "automation"],
+  "type": "COG"
+}
