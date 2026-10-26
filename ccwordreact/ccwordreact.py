@@ -23,7 +23,7 @@ class CCWordReact(commands.Cog):
 	def __init__(self, bot: commands.Bot):
 		self.bot = bot
 		self.config = Config.get_conf(self, identifier=853217640112, force_registration=True)
-		self.config.register_guild(triggers=[])
+		self.config.register_guild(triggers=[], output_channels={"text": None, "image": None})
 		self._pending_trigger_responses: dict[int, list[float]] = defaultdict(list)
 
 	def _get_customcom_cog(self) -> Optional[Any]:
@@ -154,6 +154,25 @@ class CCWordReact(commands.Cog):
 				return int(trigger_user_id.strip()) == user_id
 		return False
 
+	def _trigger_matches_rule(self, trigger: dict[str, Any], user_id: int, word: str) -> bool:
+		return self._trigger_matches_user(trigger, user_id) and str(trigger.get("word", "")).casefold() == word.casefold()
+
+	async def _get_output_channel_for_type(
+		self,
+		guild: discord.Guild,
+		output_type: str,
+		fallback_channel: discord.abc.Messageable,
+	) -> discord.abc.Messageable:
+		with contextlib.suppress(Exception):
+			output_channels = await self.config.guild(guild).output_channels()
+			channel_id = output_channels.get(output_type)
+			if isinstance(channel_id, int):
+				channel = guild.get_channel(channel_id)
+				if isinstance(channel, discord.TextChannel):
+					return channel
+
+		return fallback_channel
+
 	def _mark_triggered_channel(self, channel_id: int) -> None:
 		now = time.monotonic()
 		expiry = now + self._TRIGGER_WINDOW_SECONDS
@@ -239,14 +258,25 @@ class CCWordReact(commands.Cog):
 
 		image_urls = self._extract_image_urls_from_message(message)
 		if image_urls:
+			target_channel = await self._get_output_channel_for_type(message.guild, "image", message.channel)
 			payload = "\n".join(image_urls)
 			with contextlib.suppress(discord.Forbidden, discord.HTTPException):
-				await message.channel.send(payload)
+				await target_channel.send(payload)
 			with contextlib.suppress(discord.Forbidden, discord.NotFound, discord.HTTPException):
 				await message.delete()
 			return
 
 		new_content, changed = self._sanitize_markdown_image_text(message.content or "")
+		final_content = new_content if changed else (message.content or None)
+		target_channel = await self._get_output_channel_for_type(message.guild, "text", message.channel)
+		if target_channel.id != message.channel.id:
+			if final_content:
+				with contextlib.suppress(discord.Forbidden, discord.HTTPException):
+					await target_channel.send(final_content)
+			with contextlib.suppress(discord.Forbidden, discord.NotFound, discord.HTTPException):
+				await message.delete()
+			return
+
 		if not changed:
 			return
 
@@ -286,17 +316,29 @@ class CCWordReact(commands.Cog):
 		if not triggers:
 			return
 
+		now = time.time()
 		for trigger in triggers:
 			if not self._trigger_matches_user(trigger, message.author.id):
 				continue
 
-			word = trigger.get("word", "").strip()
-			command_name = trigger.get("command_name", "").strip()
+			word = str(trigger.get("word", "")).strip()
+			command_name = str(trigger.get("command_name", "")).strip()
 			if not word or not command_name:
 				continue
 
 			if not self._matches_word(message.content, word):
 				continue
+
+			cooldown_seconds = float(trigger.get("cooldown_seconds", 0) or 0)
+			last_triggered_at = float(trigger.get("last_triggered_at", 0) or 0)
+			if cooldown_seconds > 0 and now - last_triggered_at < cooldown_seconds:
+				continue
+
+			async with self.config.guild(message.guild).triggers() as live_triggers:
+				for live_trigger in live_triggers:
+					if self._trigger_matches_rule(live_trigger, message.author.id, word):
+						live_trigger["last_triggered_at"] = now
+						break
 
 			await self._run_custom_command(message, command_name)
 			return
@@ -316,6 +358,7 @@ class CCWordReact(commands.Cog):
 		user_ref: str,
 		word: str,
 		command_name: str,
+		cooldown_seconds: float = 0,
 	) -> None:
 		"""Add a trigger: when <user> says <word>, run <command_name>."""
 		user = self._resolve_member(ctx.guild, user_ref)
@@ -325,6 +368,7 @@ class CCWordReact(commands.Cog):
 
 		word = word.strip()
 		command_name = command_name.strip()
+		cooldown_seconds = max(0.0, float(cooldown_seconds))
 		if not word or not command_name:
 			await ctx.send("Word and command name are required.")
 			return
@@ -337,6 +381,8 @@ class CCWordReact(commands.Cog):
 			"user_id": user.id,
 			"word": word,
 			"command_name": command_name,
+			"cooldown_seconds": cooldown_seconds,
+			"last_triggered_at": 0,
 		}
 
 		async with self.config.guild(ctx.guild).triggers() as triggers:
@@ -347,12 +393,14 @@ class CCWordReact(commands.Cog):
 				):
 					existing["user_id"] = user.id
 					existing["command_name"] = command_name
+					existing["cooldown_seconds"] = cooldown_seconds
+					existing.setdefault("last_triggered_at", 0)
 					break
 			else:
 				triggers.append(new_trigger)
 
 		await ctx.send(
-			f"Trigger set: when {user.mention} says `{word}`, run custom command `{command_name}`."
+			f"Trigger set: when {user.mention} says `{word}`, run custom command `{command_name}` (cooldown: {cooldown_seconds:g}s)."
 		)
 
 	@ccwordreactset.command(name="remove")
@@ -382,6 +430,84 @@ class CCWordReact(commands.Cog):
 		else:
 			await ctx.send("No matching trigger found.")
 
+	@ccwordreactset.command(name="cooldown")
+	async def ccwordreactset_cooldown(self, ctx: commands.Context, user_ref: str, word: str, seconds: float) -> None:
+		"""Set cooldown seconds for an existing trigger rule."""
+		user = self._resolve_member(ctx.guild, user_ref)
+		if user is None:
+			await ctx.send(f"Could not find a member matching `{user_ref}`.")
+			return
+
+		seconds = max(0.0, float(seconds))
+		updated = False
+		async with self.config.guild(ctx.guild).triggers() as triggers:
+			for trigger in triggers:
+				if self._trigger_matches_rule(trigger, user.id, word):
+					trigger["cooldown_seconds"] = seconds
+					trigger.setdefault("last_triggered_at", 0)
+					updated = True
+					break
+
+		if not updated:
+			await ctx.send("No matching trigger found.")
+			return
+
+		await ctx.send(f"Cooldown set to {seconds:g}s for {user.mention} saying `{word}`.")
+
+	@ccwordreactset.group(name="output", invoke_without_command=True)
+	async def ccwordreactset_output(self, ctx: commands.Context) -> None:
+		"""Configure output channels by output type (text/image)."""
+		if ctx.invoked_subcommand is None:
+			await ctx.send_help()
+
+	@ccwordreactset_output.command(name="set")
+	async def ccwordreactset_output_set(
+		self,
+		ctx: commands.Context,
+		output_type: str,
+		channel: discord.TextChannel,
+	) -> None:
+		"""Set output channel for text or image output."""
+		normalized_type = output_type.casefold().strip()
+		if normalized_type not in {"text", "image"}:
+			await ctx.send("Output type must be `text` or `image`.")
+			return
+
+		async with self.config.guild(ctx.guild).output_channels() as output_channels:
+			output_channels[normalized_type] = channel.id
+
+		await ctx.send(f"{normalized_type.title()} output will be posted in {channel.mention}.")
+
+	@ccwordreactset_output.command(name="clear")
+	async def ccwordreactset_output_clear(self, ctx: commands.Context, output_type: str) -> None:
+		"""Clear output channel override for text or image output."""
+		normalized_type = output_type.casefold().strip()
+		if normalized_type not in {"text", "image"}:
+			await ctx.send("Output type must be `text` or `image`.")
+			return
+
+		async with self.config.guild(ctx.guild).output_channels() as output_channels:
+			output_channels[normalized_type] = None
+
+		await ctx.send(
+			f"{normalized_type.title()} output channel reset to trigger channel default."
+		)
+
+	@ccwordreactset_output.command(name="show")
+	async def ccwordreactset_output_show(self, ctx: commands.Context) -> None:
+		"""Show output channel routing for text and image output."""
+		output_channels = await self.config.guild(ctx.guild).output_channels()
+		lines: list[str] = []
+		for output_type in ("text", "image"):
+			channel_id = output_channels.get(output_type)
+			channel = ctx.guild.get_channel(channel_id) if isinstance(channel_id, int) else None
+			if isinstance(channel, discord.TextChannel):
+				lines.append(f"- {output_type}: {channel.mention}")
+			else:
+				lines.append(f"- {output_type}: trigger channel (default)")
+
+		await ctx.send("Output routing:\n" + "\n".join(lines))
+
 	@ccwordreactset.command(name="list")
 	async def ccwordreactset_list(self, ctx: commands.Context) -> None:
 		"""List configured triggers."""
@@ -395,6 +521,7 @@ class CCWordReact(commands.Cog):
 			user_id = trigger.get("user_id")
 			word = str(trigger.get("word", "")).strip()
 			command_name = str(trigger.get("command_name", "")).strip()
+			cooldown_seconds = float(trigger.get("cooldown_seconds", 0) or 0)
 			member: Optional[discord.Member] = None
 			if isinstance(user_id, int):
 				member = ctx.guild.get_member(user_id)
@@ -402,7 +529,9 @@ class CCWordReact(commands.Cog):
 				with contextlib.suppress(ValueError):
 					member = ctx.guild.get_member(int(user_id.strip()))
 			user_display = member.mention if member is not None else f"UserID {user_id}"
-			lines.append(f"- {user_display} -> `{word}` => `{command_name}`")
+			lines.append(
+				f"- {user_display} -> `{word}` => `{command_name}` (cooldown: {cooldown_seconds:g}s)"
+			)
 
 		await ctx.send("Configured triggers:\n" + "\n".join(lines))
 
