@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import contextlib
 import re
 from typing import Any, Optional
 
@@ -25,9 +26,56 @@ class CCWordReact(commands.Cog):
 				return cog
 		return None
 
+	def _candidate_command_names(self, command_name: str) -> list[str]:
+		raw = command_name.strip()
+		token = raw.split(maxsplit=1)[0] if raw else ""
+		candidates = [raw, token]
+		cleaned: list[str] = []
+		seen: set[str] = set()
+		for candidate in candidates:
+			candidate = candidate.strip()
+			if candidate.startswith("!"):
+				candidate = candidate[1:]
+			if not candidate:
+				continue
+			key = candidate.casefold()
+			if key in seen:
+				continue
+			seen.add(key)
+			cleaned.append(candidate)
+		return cleaned
+
+	async def _custom_command_exists_in_config(self, customcom: Any, guild: discord.Guild, names: list[str]) -> bool:
+		config = getattr(customcom, "config", None)
+		if config is None:
+			return False
+
+		normalized = {name.casefold() for name in names}
+		guild_conf = config.guild(guild)
+		for container_name in ("commands", "ccs", "custom_commands", "customcom", "cmds"):
+			getter = getattr(guild_conf, container_name, None)
+			if getter is None or not callable(getter):
+				continue
+			with contextlib.suppress(Exception):
+				value = getter()
+				if hasattr(value, "all") and callable(getattr(value, "all")):
+					value = value.all()
+				if hasattr(value, "__await__"):
+					value = await value
+				if isinstance(value, dict):
+					keys = {str(key).strip().casefold() for key in value if isinstance(key, str)}
+					if normalized & keys:
+						return True
+
+		return False
+
 	async def _custom_command_exists(self, guild: discord.Guild, command_name: str) -> bool:
 		customcom = self._get_customcom_cog()
 		if customcom is None:
+			return False
+
+		candidate_names = self._candidate_command_names(command_name)
+		if not candidate_names:
 			return False
 
 		for method_name in ("get_command", "get_cc", "get_custom_command", "get_customcom"):
@@ -35,25 +83,26 @@ class CCWordReact(commands.Cog):
 			if method is None:
 				continue
 
-			result: Any = None
-			for args in ((guild, command_name), (command_name,)):
-				try:
-					result = method(*args)
-				except Exception:
-					result = None
-				if result is not None:
-					break
+			for name in candidate_names:
+				result: Any = None
+				for args in ((guild, name), (name, guild), (name,)):
+					try:
+						result = method(*args)
+					except Exception:
+						result = None
+					if result is not None:
+						break
 
-			if result is not None and hasattr(result, "__await__"):
-				try:
-					result = await result
-				except Exception:
-					result = None
+				if result is not None and hasattr(result, "__await__"):
+					try:
+						result = await result
+					except Exception:
+						result = None
 
-			if result:
-				return True
+				if result:
+					return True
 
-		return False
+		return await self._custom_command_exists_in_config(customcom, guild, candidate_names)
 
 	def _matches_word(self, content: str, word: str) -> bool:
 		pattern = rf"(?<!\w){re.escape(word)}(?!\w)"
