@@ -17,6 +17,8 @@ class CCWordReact(commands.Cog):
 	_CUSTOMCOM_COG_NAMES = ("CustomCom", "CustomCommands", "customcom")
 	_TRIGGER_WINDOW_SECONDS = 10
 	_MARKDOWN_IMAGE_RE = re.compile(r"!\[[^\]]*\]\s*\((https?://[^)\s]+)\)", re.IGNORECASE)
+	_URL_RE = re.compile(r"https?://[^\s)>]+", re.IGNORECASE)
+	_IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tif", ".tiff", ".svg")
 
 	def __init__(self, bot: commands.Bot):
 		self.bot = bot
@@ -134,15 +136,27 @@ class CCWordReact(commands.Cog):
 			self._pending_trigger_responses.pop(channel_id, None)
 		return True
 
-	def _sanitize_markdown_image_text(self, content: str) -> tuple[Optional[str], bool]:
-		if "![" not in content:
-			return content, False
+	def _is_image_url(self, value: str) -> bool:
+		target = value.strip().strip("<>")
+		target_lower = target.casefold()
+		if not (target_lower.startswith("http://") or target_lower.startswith("https://")):
+			return False
+		path = target_lower.split("?", 1)[0]
+		return path.endswith(self._IMAGE_EXTENSIONS)
 
+	def _sanitize_markdown_image_text(self, content: str) -> tuple[Optional[str], bool]:
+		original = content
 		cleaned = self._MARKDOWN_IMAGE_RE.sub("", content)
+
+		def _replace_url(match: re.Match[str]) -> str:
+			url = match.group(0)
+			return "" if self._is_image_url(url) else url
+
+		cleaned = self._URL_RE.sub(_replace_url, cleaned)
 		cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
 		cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
-		if cleaned == content:
-			return content, False
+		if cleaned == original:
+			return original, False
 		return (cleaned if cleaned else None), True
 
 	async def _maybe_sanitize_trigger_response(self, message: discord.Message) -> None:
