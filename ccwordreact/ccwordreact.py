@@ -11,17 +11,6 @@ import discord
 from redbot.core import Config, commands
 
 
-class _TriggerSafeMessageProxy:
-	def __init__(self, source: discord.Message):
-		self._source = source
-
-	def __getattr__(self, item: str) -> Any:
-		return getattr(self._source, item)
-
-	async def delete(self, *args: Any, **kwargs: Any) -> None:
-		return None
-
-
 class CCWordReact(commands.Cog):
 	"""Run custom commands when a specific user says a specific word."""
 
@@ -311,12 +300,8 @@ class CCWordReact(commands.Cog):
 
 		fake_message = copy.copy(message)
 		fake_message.content = f"{prefix}{command_name}"
-		ctx = await self.bot.get_context(fake_message)
-		if not ctx.valid:
-			return
-
-		ctx.message = _TriggerSafeMessageProxy(fake_message)
-		await self.bot.invoke(ctx)
+		fake_message.id = 0
+		await self.bot.process_commands(fake_message)
 
 	@commands.Cog.listener()
 	async def on_message(self, message: discord.Message) -> None:
