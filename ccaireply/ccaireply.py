@@ -33,6 +33,7 @@ class CCAIReply(commands.Cog):
 			max_tokens=300,
 			timeout_seconds=30,
 			extra_headers={},
+			allowed_channel_ids=[],
 		)
 
 	@commands.group(invoke_without_command=True)
@@ -173,6 +174,14 @@ class CCAIReply(commands.Cog):
 		max_tokens = conf.get("max_tokens", 300)
 		timeout_seconds = conf.get("timeout_seconds", 30)
 		api_key_set = bool(conf.get("api_key", "").strip())
+		allowed_ids = [cid for cid in conf.get("allowed_channel_ids", []) if isinstance(cid, int)]
+		if allowed_ids:
+			allowed_display = ", ".join(
+				(ctx.guild.get_channel(cid).mention if isinstance(ctx.guild.get_channel(cid), discord.TextChannel) else f"#{cid}")
+				for cid in allowed_ids
+			)
+		else:
+			allowed_display = "all channels"
 
 		lines = [
 			f"- enabled: `{enabled}`",
@@ -185,6 +194,7 @@ class CCAIReply(commands.Cog):
 			f"- max_tokens: `{max_tokens}`",
 			f"- timeout_seconds: `{timeout_seconds}`",
 			f"- custom_headers: `{', '.join(headers.keys()) if headers else '(none)'}`",
+			f"- allowed_channels: {allowed_display}",
 		]
 		await ctx.send("CCAIReply configuration:\n" + "\n".join(lines))
 
@@ -198,6 +208,53 @@ class CCAIReply(commands.Cog):
 			return
 		preview = result if len(result) <= 1500 else (result[:1500] + "...")
 		await ctx.send("Test succeeded. Model reply:\n" + preview)
+
+	@ccaireplyset.group(name="channels", invoke_without_command=True)
+	async def ccaireplyset_channels(self, ctx: commands.Context) -> None:
+		"""Configure which channels CCAIReply can chat in."""
+		if ctx.invoked_subcommand is None:
+			await ctx.send_help()
+
+	@ccaireplyset_channels.command(name="add")
+	async def ccaireplyset_channels_add(self, ctx: commands.Context, channel: discord.TextChannel) -> None:
+		"""Allow CCAIReply in a channel."""
+		async with self.config.guild(ctx.guild).allowed_channel_ids() as allowed:
+			if channel.id not in allowed:
+				allowed.append(channel.id)
+		await ctx.send(f"CCAIReply allowed in {channel.mention}.")
+
+	@ccaireplyset_channels.command(name="remove")
+	async def ccaireplyset_channels_remove(self, ctx: commands.Context, channel: discord.TextChannel) -> None:
+		"""Disallow CCAIReply in a channel."""
+		removed = False
+		async with self.config.guild(ctx.guild).allowed_channel_ids() as allowed:
+			if channel.id in allowed:
+				allowed.remove(channel.id)
+				removed = True
+		if removed:
+			await ctx.send(f"CCAIReply removed from allowed channels for {channel.mention}.")
+		else:
+			await ctx.send(f"{channel.mention} was not in the allowlist.")
+
+	@ccaireplyset_channels.command(name="list")
+	async def ccaireplyset_channels_list(self, ctx: commands.Context) -> None:
+		"""List allowed channels. Empty list means all channels are allowed."""
+		allowed = await self.config.guild(ctx.guild).allowed_channel_ids()
+		ids = [cid for cid in allowed if isinstance(cid, int)]
+		if not ids:
+			await ctx.send("Allowed channels: all channels (no restriction set).")
+			return
+		mentions = []
+		for cid in ids:
+			channel = ctx.guild.get_channel(cid)
+			mentions.append(channel.mention if isinstance(channel, discord.TextChannel) else f"#{cid}")
+		await ctx.send("Allowed channels:\n- " + "\n- ".join(mentions))
+
+	@ccaireplyset_channels.command(name="clear")
+	async def ccaireplyset_channels_clear(self, ctx: commands.Context) -> None:
+		"""Clear channel restrictions (allow all channels)."""
+		await self.config.guild(ctx.guild).allowed_channel_ids.set([])
+		await ctx.send("Channel restrictions cleared. CCAIReply can chat in all channels.")
 
 	def _message_mentions_bot(self, message: discord.Message) -> bool:
 		bot_user = self.bot.user
@@ -370,6 +427,9 @@ class CCAIReply(commands.Cog):
 			return
 		conf = await self.config.guild(message.guild).all()
 		if not conf.get("enabled", False):
+			return
+		allowed_ids = [cid for cid in conf.get("allowed_channel_ids", []) if isinstance(cid, int)]
+		if allowed_ids and message.channel.id not in allowed_ids:
 			return
 		should_trigger = await self._should_trigger(message, conf)
 		if not should_trigger:

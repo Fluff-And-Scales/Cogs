@@ -23,7 +23,11 @@ class CCWordReact(commands.Cog):
 	def __init__(self, bot: commands.Bot):
 		self.bot = bot
 		self.config = Config.get_conf(self, identifier=853217640112, force_registration=True)
-		self.config.register_guild(triggers=[], output_channels={"text": None, "image": None})
+		self.config.register_guild(
+			triggers=[],
+			output_channels={"text": None, "image": None},
+			global_cooldown_seconds=0.0,
+		)
 		self._pending_trigger_responses: dict[int, list[float]] = defaultdict(list)
 
 	def _get_customcom_cog(self) -> Optional[Any]:
@@ -335,9 +339,11 @@ class CCWordReact(commands.Cog):
 				await self._maybe_sanitize_trigger_response(message)
 			return
 
-		triggers = await self.config.guild(message.guild).triggers()
+		guild_conf = self.config.guild(message.guild)
+		triggers = await guild_conf.triggers()
 		if not triggers:
 			return
+		global_cooldown_seconds = max(0.0, float(await guild_conf.global_cooldown_seconds() or 0))
 
 		now = time.time()
 		for trigger in triggers:
@@ -352,9 +358,10 @@ class CCWordReact(commands.Cog):
 			if not self._matches_word(message.content, word):
 				continue
 
-			cooldown_seconds = float(trigger.get("cooldown_seconds", 0) or 0)
+			rule_cooldown_seconds = float(trigger.get("cooldown_seconds", 0) or 0)
+			effective_cooldown_seconds = rule_cooldown_seconds if rule_cooldown_seconds > 0 else global_cooldown_seconds
 			last_triggered_at = float(trigger.get("last_triggered_at", 0) or 0)
-			if cooldown_seconds > 0 and now - last_triggered_at < cooldown_seconds:
+			if effective_cooldown_seconds > 0 and now - last_triggered_at < effective_cooldown_seconds:
 				continue
 
 			async with self.config.guild(message.guild).triggers() as live_triggers:
@@ -475,7 +482,7 @@ class CCWordReact(commands.Cog):
 
 	@ccwordreactset.command(name="cooldown")
 	async def ccwordreactset_cooldown(self, ctx: commands.Context, user_ref: str, word: str, seconds: float) -> None:
-		"""Set cooldown seconds for an existing trigger rule. Use user_ref `*` for global triggers."""
+		"""Set per-rule cooldown seconds. Use user_ref `*` for global triggers. Set 0 to use global cooldown."""
 		is_global = user_ref.strip().casefold() in {"*", "all", "global"}
 		user: Optional[discord.Member] = None
 		if not is_global:
@@ -503,9 +510,22 @@ class CCWordReact(commands.Cog):
 			return
 
 		if is_global:
-			await ctx.send(f"Cooldown set to {seconds:g}s for global trigger `{word}`.")
+			if seconds > 0:
+				await ctx.send(f"Cooldown set to {seconds:g}s for global trigger `{word}`.")
+			else:
+				await ctx.send(f"Per-rule cooldown cleared for global trigger `{word}`; it now uses the global cooldown setting.")
 		else:
-			await ctx.send(f"Cooldown set to {seconds:g}s for {user.mention} saying `{word}`.")
+			if seconds > 0:
+				await ctx.send(f"Cooldown set to {seconds:g}s for {user.mention} saying `{word}`.")
+			else:
+				await ctx.send(f"Per-rule cooldown cleared for {user.mention} saying `{word}`; it now uses the global cooldown setting.")
+
+	@ccwordreactset.command(name="globalcooldown")
+	async def ccwordreactset_globalcooldown(self, ctx: commands.Context, seconds: float) -> None:
+		"""Set global cooldown seconds used when a trigger's per-rule cooldown is 0."""
+		seconds = max(0.0, float(seconds))
+		await self.config.guild(ctx.guild).global_cooldown_seconds.set(seconds)
+		await ctx.send(f"Global cooldown set to {seconds:g}s.")
 
 	@ccwordreactset.group(name="output", invoke_without_command=True)
 	async def ccwordreactset_output(self, ctx: commands.Context) -> None:
@@ -564,17 +584,20 @@ class CCWordReact(commands.Cog):
 	@ccwordreactset.command(name="list")
 	async def ccwordreactset_list(self, ctx: commands.Context) -> None:
 		"""List configured triggers."""
-		triggers = await self.config.guild(ctx.guild).triggers()
+		guild_conf = self.config.guild(ctx.guild)
+		triggers = await guild_conf.triggers()
+		global_cooldown_seconds = max(0.0, float(await guild_conf.global_cooldown_seconds() or 0))
 		if not triggers:
-			await ctx.send("No CCWordReact triggers configured.")
+			await ctx.send(f"No CCWordReact triggers configured. Global cooldown: {global_cooldown_seconds:g}s")
 			return
 
-		lines: list[str] = []
+		lines: list[str] = [f"Global cooldown fallback: {global_cooldown_seconds:g}s"]
 		for trigger in triggers:
 			user_id = trigger.get("user_id")
 			word = str(trigger.get("word", "")).strip()
 			command_name = str(trigger.get("command_name", "")).strip()
-			cooldown_seconds = float(trigger.get("cooldown_seconds", 0) or 0)
+			rule_cooldown_seconds = float(trigger.get("cooldown_seconds", 0) or 0)
+			effective_cooldown_seconds = rule_cooldown_seconds if rule_cooldown_seconds > 0 else global_cooldown_seconds
 			if self._trigger_is_global(trigger):
 				user_display = "Global (any user)"
 			else:
@@ -585,8 +608,9 @@ class CCWordReact(commands.Cog):
 					with contextlib.suppress(ValueError):
 						member = ctx.guild.get_member(int(user_id.strip()))
 				user_display = member.mention if member is not None else f"UserID {user_id}"
+			cooldown_source = "rule" if rule_cooldown_seconds > 0 else "global"
 			lines.append(
-				f"- {user_display} -> `{word}` => `{command_name}` (cooldown: {cooldown_seconds:g}s)"
+				f"- {user_display} -> `{word}` => `{command_name}` (cooldown: {effective_cooldown_seconds:g}s, source: {cooldown_source})"
 			)
 
 		await ctx.send("Configured triggers:\n" + "\n".join(lines))
