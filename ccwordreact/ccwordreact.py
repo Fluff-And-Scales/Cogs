@@ -159,8 +159,52 @@ class CCWordReact(commands.Cog):
 			return original, False
 		return (cleaned if cleaned else None), True
 
+	def _extract_image_urls_from_message(self, message: discord.Message) -> list[str]:
+		urls: list[str] = []
+
+		for match in self._MARKDOWN_IMAGE_RE.finditer(message.content or ""):
+			url = match.group(1).strip()
+			if self._is_image_url(url):
+				urls.append(url.strip("<>"))
+
+		for match in self._URL_RE.finditer(message.content or ""):
+			url = match.group(0).strip()
+			if self._is_image_url(url):
+				urls.append(url.strip("<>"))
+
+		for embed in message.embeds:
+			if embed.image and embed.image.url and self._is_image_url(embed.image.url):
+				urls.append(embed.image.url.strip("<>"))
+			if embed.thumbnail and embed.thumbnail.url and self._is_image_url(embed.thumbnail.url):
+				urls.append(embed.thumbnail.url.strip("<>"))
+
+		for attachment in message.attachments:
+			attachment_url = str(getattr(attachment, "url", "") or "").strip()
+			if attachment_url and self._is_image_url(attachment_url):
+				urls.append(attachment_url.strip("<>"))
+
+		unique_urls: list[str] = []
+		seen: set[str] = set()
+		for url in urls:
+			key = url.casefold()
+			if key in seen:
+				continue
+			seen.add(key)
+			unique_urls.append(url)
+
+		return unique_urls
+
 	async def _maybe_sanitize_trigger_response(self, message: discord.Message) -> None:
 		if not self._consume_triggered_channel(message.channel.id):
+			return
+
+		image_urls = self._extract_image_urls_from_message(message)
+		if image_urls:
+			payload = "\n".join(image_urls)
+			with contextlib.suppress(discord.Forbidden, discord.HTTPException):
+				await message.channel.send(payload)
+			with contextlib.suppress(discord.Forbidden, discord.NotFound, discord.HTTPException):
+				await message.delete()
 			return
 
 		new_content, changed = self._sanitize_markdown_image_text(message.content or "")
