@@ -145,7 +145,17 @@ class CCWordReact(commands.Cog):
 
 		return None
 
-	def _trigger_matches_user(self, trigger: dict[str, Any], user_id: int) -> bool:
+	def _trigger_is_global(self, trigger: dict[str, Any]) -> bool:
+		trigger_user_id = trigger.get("user_id")
+		if trigger_user_id is None:
+			return True
+		if isinstance(trigger_user_id, str):
+			return trigger_user_id.strip().casefold() in {"*", "all", "global"}
+		return False
+
+	def _trigger_matches_exact_user(self, trigger: dict[str, Any], user_id: int) -> bool:
+		if self._trigger_is_global(trigger):
+			return False
 		trigger_user_id = trigger.get("user_id")
 		if isinstance(trigger_user_id, int):
 			return trigger_user_id == user_id
@@ -154,8 +164,20 @@ class CCWordReact(commands.Cog):
 				return int(trigger_user_id.strip()) == user_id
 		return False
 
+	def _trigger_matches_user(self, trigger: dict[str, Any], user_id: int) -> bool:
+		return self._trigger_is_global(trigger) or self._trigger_matches_exact_user(trigger, user_id)
+
 	def _trigger_matches_rule(self, trigger: dict[str, Any], user_id: int, word: str) -> bool:
 		return self._trigger_matches_user(trigger, user_id) and str(trigger.get("word", "")).casefold() == word.casefold()
+
+	def _same_trigger_target(self, left: dict[str, Any], right: dict[str, Any]) -> bool:
+		if self._trigger_is_global(left) and self._trigger_is_global(right):
+			return True
+		if self._trigger_is_global(left) or self._trigger_is_global(right):
+			return False
+		left_user = left.get("user_id")
+		right_user = right.get("user_id")
+		return str(left_user).strip() == str(right_user).strip()
 
 	async def _get_output_channel_for_type(
 		self,
@@ -337,7 +359,11 @@ class CCWordReact(commands.Cog):
 
 			async with self.config.guild(message.guild).triggers() as live_triggers:
 				for live_trigger in live_triggers:
-					if self._trigger_matches_rule(live_trigger, message.author.id, word):
+					if (
+						self._same_trigger_target(live_trigger, trigger)
+						and str(live_trigger.get("word", "")).casefold() == word.casefold()
+						and str(live_trigger.get("command_name", "")).strip().casefold() == command_name.casefold()
+					):
 						live_trigger["last_triggered_at"] = now
 						break
 
@@ -361,11 +387,14 @@ class CCWordReact(commands.Cog):
 		command_name: str,
 		cooldown_seconds: float = 0,
 	) -> None:
-		"""Add a trigger: when <user> says <word>, run <command_name>."""
-		user = self._resolve_member(ctx.guild, user_ref)
-		if user is None:
-			await ctx.send(f"Could not find a member matching `{user_ref}`.")
-			return
+		"""Add a trigger: when <user> says <word>, run <command_name>. Use user_ref `*` for global."""
+		is_global = user_ref.strip().casefold() in {"*", "all", "global"}
+		user: Optional[discord.Member] = None
+		if not is_global:
+			user = self._resolve_member(ctx.guild, user_ref)
+			if user is None:
+				await ctx.send(f"Could not find a member matching `{user_ref}`.")
+				return
 
 		word = word.strip()
 		command_name = command_name.strip()
@@ -379,7 +408,7 @@ class CCWordReact(commands.Cog):
 			return
 
 		new_trigger = {
-			"user_id": user.id,
+			"user_id": "*" if is_global else user.id,
 			"word": word,
 			"command_name": command_name,
 			"cooldown_seconds": cooldown_seconds,
@@ -388,11 +417,12 @@ class CCWordReact(commands.Cog):
 
 		async with self.config.guild(ctx.guild).triggers() as triggers:
 			for existing in triggers:
-				if (
-					self._trigger_matches_user(existing, user.id)
-					and str(existing.get("word", "")).casefold() == word.casefold()
-				):
-					existing["user_id"] = user.id
+				if is_global:
+					matches_target = self._trigger_is_global(existing)
+				else:
+					matches_target = user is not None and self._trigger_matches_exact_user(existing, user.id)
+				if matches_target and str(existing.get("word", "")).casefold() == word.casefold():
+					existing["user_id"] = "*" if is_global else user.id
 					existing["command_name"] = command_name
 					existing["cooldown_seconds"] = cooldown_seconds
 					existing.setdefault("last_triggered_at", 0)
@@ -400,50 +430,69 @@ class CCWordReact(commands.Cog):
 			else:
 				triggers.append(new_trigger)
 
-		await ctx.send(
-			f"Trigger set: when {user.mention} says `{word}`, run custom command `{command_name}` (cooldown: {cooldown_seconds:g}s)."
-		)
+		if is_global:
+			await ctx.send(
+				f"Global trigger set: when anyone says `{word}`, run custom command `{command_name}` (cooldown: {cooldown_seconds:g}s)."
+			)
+		else:
+			await ctx.send(
+				f"Trigger set: when {user.mention} says `{word}`, run custom command `{command_name}` (cooldown: {cooldown_seconds:g}s)."
+			)
 
 	@ccwordreactset.command(name="remove")
 	async def ccwordreactset_remove(self, ctx: commands.Context, user_ref: str, word: str) -> None:
-		"""Remove a trigger by user and word."""
-		user = self._resolve_member(ctx.guild, user_ref)
-		if user is None:
-			await ctx.send(f"Could not find a member matching `{user_ref}`.")
-			return
+		"""Remove a trigger by user and word. Use user_ref `*` for global triggers."""
+		is_global = user_ref.strip().casefold() in {"*", "all", "global"}
+		user: Optional[discord.Member] = None
+		if not is_global:
+			user = self._resolve_member(ctx.guild, user_ref)
+			if user is None:
+				await ctx.send(f"Could not find a member matching `{user_ref}`.")
+				return
 
 		word = word.strip()
 		removed = False
 		async with self.config.guild(ctx.guild).triggers() as triggers:
 			remaining = []
 			for trigger in triggers:
-				if (
-					self._trigger_matches_user(trigger, user.id)
-					and str(trigger.get("word", "")).casefold() == word.casefold()
-				):
+				if is_global:
+					matches_target = self._trigger_is_global(trigger)
+				else:
+					matches_target = user is not None and self._trigger_matches_exact_user(trigger, user.id)
+				if matches_target and str(trigger.get("word", "")).casefold() == word.casefold():
 					removed = True
 					continue
 				remaining.append(trigger)
 			triggers[:] = remaining
 
 		if removed:
-			await ctx.send(f"Removed trigger for {user.mention} saying `{word}`.")
+			if is_global:
+				await ctx.send(f"Removed global trigger for `{word}`.")
+			else:
+				await ctx.send(f"Removed trigger for {user.mention} saying `{word}`.")
 		else:
 			await ctx.send("No matching trigger found.")
 
 	@ccwordreactset.command(name="cooldown")
 	async def ccwordreactset_cooldown(self, ctx: commands.Context, user_ref: str, word: str, seconds: float) -> None:
-		"""Set cooldown seconds for an existing trigger rule."""
-		user = self._resolve_member(ctx.guild, user_ref)
-		if user is None:
-			await ctx.send(f"Could not find a member matching `{user_ref}`.")
-			return
+		"""Set cooldown seconds for an existing trigger rule. Use user_ref `*` for global triggers."""
+		is_global = user_ref.strip().casefold() in {"*", "all", "global"}
+		user: Optional[discord.Member] = None
+		if not is_global:
+			user = self._resolve_member(ctx.guild, user_ref)
+			if user is None:
+				await ctx.send(f"Could not find a member matching `{user_ref}`.")
+				return
 
 		seconds = max(0.0, float(seconds))
 		updated = False
 		async with self.config.guild(ctx.guild).triggers() as triggers:
 			for trigger in triggers:
-				if self._trigger_matches_rule(trigger, user.id, word):
+				if is_global:
+					matches_target = self._trigger_is_global(trigger)
+				else:
+					matches_target = user is not None and self._trigger_matches_exact_user(trigger, user.id)
+				if matches_target and str(trigger.get("word", "")).casefold() == word.casefold():
 					trigger["cooldown_seconds"] = seconds
 					trigger.setdefault("last_triggered_at", 0)
 					updated = True
@@ -453,7 +502,10 @@ class CCWordReact(commands.Cog):
 			await ctx.send("No matching trigger found.")
 			return
 
-		await ctx.send(f"Cooldown set to {seconds:g}s for {user.mention} saying `{word}`.")
+		if is_global:
+			await ctx.send(f"Cooldown set to {seconds:g}s for global trigger `{word}`.")
+		else:
+			await ctx.send(f"Cooldown set to {seconds:g}s for {user.mention} saying `{word}`.")
 
 	@ccwordreactset.group(name="output", invoke_without_command=True)
 	async def ccwordreactset_output(self, ctx: commands.Context) -> None:
@@ -523,13 +575,16 @@ class CCWordReact(commands.Cog):
 			word = str(trigger.get("word", "")).strip()
 			command_name = str(trigger.get("command_name", "")).strip()
 			cooldown_seconds = float(trigger.get("cooldown_seconds", 0) or 0)
-			member: Optional[discord.Member] = None
-			if isinstance(user_id, int):
-				member = ctx.guild.get_member(user_id)
-			elif isinstance(user_id, str):
-				with contextlib.suppress(ValueError):
-					member = ctx.guild.get_member(int(user_id.strip()))
-			user_display = member.mention if member is not None else f"UserID {user_id}"
+			if self._trigger_is_global(trigger):
+				user_display = "Global (any user)"
+			else:
+				member: Optional[discord.Member] = None
+				if isinstance(user_id, int):
+					member = ctx.guild.get_member(user_id)
+				elif isinstance(user_id, str):
+					with contextlib.suppress(ValueError):
+						member = ctx.guild.get_member(int(user_id.strip()))
+				user_display = member.mention if member is not None else f"UserID {user_id}"
 			lines.append(
 				f"- {user_display} -> `{word}` => `{command_name}` (cooldown: {cooldown_seconds:g}s)"
 			)
