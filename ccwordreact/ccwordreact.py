@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import copy
 import contextlib
 import re
 import time
@@ -9,6 +8,18 @@ from typing import Any, Optional
 
 import discord
 from redbot.core import Config, commands
+
+
+class _TriggerSafeMessageProxy:
+	def __init__(self, source: discord.Message, content: str):
+		self._source = source
+		self.content = content
+
+	def __getattr__(self, item: str) -> Any:
+		return getattr(self._source, item)
+
+	async def delete(self, *args: Any, **kwargs: Any) -> None:
+		return None
 
 
 class CCWordReact(commands.Cog):
@@ -298,9 +309,8 @@ class CCWordReact(commands.Cog):
 		else:
 			prefix = next((p for p in prefixes if isinstance(p, str)), "!")
 
-		fake_message = copy.copy(message)
-		fake_message.content = f"{prefix}{command_name}"
-		await self.bot.process_commands(fake_message)
+		proxy_message = _TriggerSafeMessageProxy(message, f"{prefix}{command_name}")
+		await self.bot.process_commands(proxy_message)
 
 	@commands.Cog.listener()
 	async def on_message(self, message: discord.Message) -> None:
