@@ -154,27 +154,6 @@ class CCWordReact(commands.Cog):
 				return int(trigger_user_id.strip()) == user_id
 		return False
 
-	def _trigger_matches_member(self, trigger: dict[str, Any], member: discord.Member) -> bool:
-		if self._trigger_matches_user(trigger, member.id):
-			return True
-
-		stored_names = {
-			str(trigger.get("user_name", "")).casefold().strip(),
-			str(trigger.get("user_display_name", "")).casefold().strip(),
-			str(trigger.get("user_global_name", "")).casefold().strip(),
-		}
-		stored_names.discard("")
-		if not stored_names:
-			return False
-
-		current_names = {
-			(member.name or "").casefold().strip(),
-			(member.display_name or "").casefold().strip(),
-			(getattr(member, "global_name", None) or "").casefold().strip(),
-		}
-		current_names.discard("")
-		return bool(stored_names & current_names)
-
 	def _mark_triggered_channel(self, channel_id: int) -> None:
 		now = time.monotonic()
 		expiry = now + self._TRIGGER_WINDOW_SECONDS
@@ -308,7 +287,7 @@ class CCWordReact(commands.Cog):
 			return
 
 		for trigger in triggers:
-			if not self._trigger_matches_member(trigger, message.author):
+			if not self._trigger_matches_user(trigger, message.author.id):
 				continue
 
 			word = trigger.get("word", "").strip()
@@ -356,9 +335,6 @@ class CCWordReact(commands.Cog):
 
 		new_trigger = {
 			"user_id": user.id,
-			"user_name": user.name,
-			"user_display_name": user.display_name,
-			"user_global_name": getattr(user, "global_name", None),
 			"word": word,
 			"command_name": command_name,
 		}
@@ -370,9 +346,6 @@ class CCWordReact(commands.Cog):
 					and str(existing.get("word", "")).casefold() == word.casefold()
 				):
 					existing["user_id"] = user.id
-					existing["user_name"] = user.name
-					existing["user_display_name"] = user.display_name
-					existing["user_global_name"] = getattr(user, "global_name", None)
 					existing["command_name"] = command_name
 					break
 			else:
