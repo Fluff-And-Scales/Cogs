@@ -285,11 +285,10 @@ class CCWordReact(commands.Cog):
 		image_urls = self._extract_image_urls_from_message(message)
 		if image_urls:
 			target_channel = await self._get_output_channel_for_type(message.guild, "image", message.channel)
-			for image_url in image_urls:
-				embed = discord.Embed()
-				embed.set_image(url=image_url)
-				with contextlib.suppress(discord.Forbidden, discord.HTTPException):
-					await target_channel.send(embed=embed)
+			embed = discord.Embed()
+			embed.set_image(url=image_urls[0])
+			with contextlib.suppress(discord.Forbidden, discord.HTTPException):
+				await target_channel.send(embed=embed)
 			with contextlib.suppress(discord.Forbidden, discord.NotFound, discord.HTTPException):
 				await message.delete()
 			return
