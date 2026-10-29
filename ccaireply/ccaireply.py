@@ -312,16 +312,32 @@ class CCAIReply(commands.Cog):
 			return True
 		return False
 
-	def _build_chat_payload(self, conf: dict[str, Any], user_message: str) -> dict[str, Any]:
+	def _is_responses_endpoint(self, endpoint_url: str) -> bool:
+		return "/responses" in endpoint_url.casefold()
+
+	def _build_request_payload(self, conf: dict[str, Any], user_message: str, endpoint_url: str) -> dict[str, Any]:
 		system_prompt = str(conf.get("system_prompt", "") or "").strip()
 		model = str(conf.get("model", "") or "").strip()
 		temperature = float(conf.get("temperature", 0.7) or 0.7)
 		max_tokens = int(conf.get("max_tokens", 300) or 300)
+
+		if self._is_responses_endpoint(endpoint_url):
+			payload: dict[str, Any] = {
+				"input": user_message,
+				"temperature": temperature,
+				"max_output_tokens": max_tokens,
+			}
+			if system_prompt:
+				payload["instructions"] = system_prompt
+			if model:
+				payload["model"] = model
+			return payload
+
 		messages = []
 		if system_prompt:
 			messages.append({"role": "system", "content": system_prompt})
 		messages.append({"role": "user", "content": user_message})
-		payload: dict[str, Any] = {
+		payload = {
 			"messages": messages,
 			"temperature": temperature,
 			"max_tokens": max_tokens,
@@ -331,6 +347,28 @@ class CCAIReply(commands.Cog):
 		return payload
 
 	def _extract_reply_text(self, response_json: dict[str, Any]) -> str:
+		output_text = response_json.get("output_text")
+		if isinstance(output_text, str) and output_text.strip():
+			return output_text.strip()
+
+		output = response_json.get("output")
+		if isinstance(output, list):
+			parts: list[str] = []
+			for item in output:
+				if not isinstance(item, dict):
+					continue
+				content_items = item.get("content")
+				if not isinstance(content_items, list):
+					continue
+				for content_item in content_items:
+					if not isinstance(content_item, dict):
+						continue
+					text_value = content_item.get("text")
+					if isinstance(text_value, str) and text_value.strip():
+						parts.append(text_value.strip())
+			if parts:
+				return "\n".join(parts).strip()
+
 		choices = response_json.get("choices")
 		if isinstance(choices, list) and choices:
 			first = choices[0]
@@ -348,10 +386,12 @@ class CCAIReply(commands.Cog):
 			return content.strip()
 		return ""
 
-	def _perform_http_chat_request(self, conf: dict[str, Any], payload: dict[str, Any]) -> tuple[bool, str]:
+	def _perform_http_chat_request(self, conf: dict[str, Any], payload: Optional[dict[str, Any]] = None) -> tuple[bool, str]:
 		endpoint_url = str(conf.get("endpoint_url", "") or "").strip()
 		if not endpoint_url:
 			return False, "Endpoint URL is not configured."
+		if payload is None:
+			payload = self._build_request_payload(conf, "", endpoint_url)
 
 		api_key = str(conf.get("api_key", "") or "").strip()
 		extra_headers = conf.get("extra_headers", {})
@@ -388,7 +428,8 @@ class CCAIReply(commands.Cog):
 		return True, reply_text
 
 	async def _request_model_reply(self, conf: dict[str, Any], user_message: str) -> tuple[bool, str]:
-		payload = self._build_chat_payload(conf, user_message)
+		endpoint_url = str(conf.get("endpoint_url", "") or "").strip()
+		payload = self._build_request_payload(conf, user_message, endpoint_url)
 		return await asyncio.to_thread(self._perform_http_chat_request, conf, payload)
 
 	def _chunk_text(self, text: str, max_len: int = 1900) -> list[str]:
