@@ -405,27 +405,48 @@ class CCAIReply(commands.Cog):
 				if isinstance(key, str) and key.strip():
 					headers[key.strip()] = str(value)
 
-		body = json.dumps(payload).encode("utf-8")
 		timeout_seconds = int(conf.get("timeout_seconds", 30) or 30)
-		http_request = request.Request(endpoint_url, data=body, headers=headers, method="POST")
-		try:
-			with request.urlopen(http_request, timeout=timeout_seconds) as resp:
-				response_text = resp.read().decode("utf-8", errors="replace")
-		except error.HTTPError as exc:
-			error_text = exc.read().decode("utf-8", errors="replace") if exc.fp else str(exc)
-			return False, f"HTTP error {exc.code}: {error_text[:500]}"
-		except Exception as exc:
-			return False, f"Request failed: {exc}"
+		payload_candidates: list[dict[str, Any]] = [payload]
+		if isinstance(payload, dict) and "temperature" in payload:
+			without_temperature = dict(payload)
+			without_temperature.pop("temperature", None)
+			payload_candidates.append(without_temperature)
 
-		try:
-			response_json = json.loads(response_text)
-		except json.JSONDecodeError:
-			return False, "Model response was not valid JSON."
+		last_error: Optional[str] = None
+		for candidate in payload_candidates:
+			body = json.dumps(candidate).encode("utf-8")
+			http_request = request.Request(endpoint_url, data=body, headers=headers, method="POST")
+			try:
+				with request.urlopen(http_request, timeout=timeout_seconds) as resp:
+					response_text = resp.read().decode("utf-8", errors="replace")
+			except error.HTTPError as exc:
+				error_text = exc.read().decode("utf-8", errors="replace") if exc.fp else str(exc)
+				temperature_unsupported = (
+					exc.code == 400
+					and "temperature" in candidate
+					and (
+						"Unsupported parameter: 'temperature'" in error_text
+						or '"param":"temperature"' in error_text
+					)
+				)
+				if temperature_unsupported:
+					last_error = "Model does not support temperature; retrying without temperature."
+					continue
+				return False, f"HTTP error {exc.code}: {error_text[:500]}"
+			except Exception as exc:
+				return False, f"Request failed: {exc}"
 
-		reply_text = self._extract_reply_text(response_json)
-		if not reply_text:
-			return False, "Model response did not include reply content."
-		return True, reply_text
+			try:
+				response_json = json.loads(response_text)
+			except json.JSONDecodeError:
+				return False, "Model response was not valid JSON."
+
+			reply_text = self._extract_reply_text(response_json)
+			if reply_text:
+				return True, reply_text
+			last_error = "Model response did not include reply content."
+
+		return False, last_error or "AI request failed."
 
 	async def _request_model_reply(self, conf: dict[str, Any], user_message: str) -> tuple[bool, str]:
 		endpoint_url = str(conf.get("endpoint_url", "") or "").strip()
