@@ -4,6 +4,7 @@ import contextlib
 import copy
 import re
 import time
+import unicodedata
 from collections import defaultdict
 from typing import Any, Optional
 
@@ -19,6 +20,19 @@ class CCWordReact(commands.Cog):
 	_MARKDOWN_IMAGE_RE = re.compile(r"!\[[^\]]*\]\s*\((https?://[^)\s]+)\)", re.IGNORECASE)
 	_URL_RE = re.compile(r"https?://[^\s)>]+", re.IGNORECASE)
 	_IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tif", ".tiff", ".svg")
+	_LEET_TRANSLATION = str.maketrans({
+		"@": "a",
+		"4": "a",
+		"3": "e",
+		"1": "i",
+		"!": "i",
+		"|": "i",
+		"0": "o",
+		"5": "s",
+		"$": "s",
+		"7": "t",
+		"+": "t",
+	})
 
 	def __init__(self, bot: commands.Bot):
 		self.bot = bot
@@ -115,9 +129,31 @@ class CCWordReact(commands.Cog):
 
 		return await self._custom_command_exists_in_config(customcom, guild, candidate_names)
 
+	def _normalize_text_for_match(self, value: str) -> str:
+		normalized = unicodedata.normalize("NFKD", value.casefold())
+		normalized = "".join(ch for ch in normalized if not unicodedata.combining(ch))
+		normalized = normalized.translate(self._LEET_TRANSLATION)
+		normalized = re.sub(r"[^a-z0-9\s]", " ", normalized)
+		normalized = re.sub(r"\s+", " ", normalized).strip()
+		return normalized
+
 	def _matches_word(self, content: str, word: str) -> bool:
 		pattern = rf"(?<!\w){re.escape(word)}(?!\w)"
-		return re.search(pattern, content, flags=re.IGNORECASE) is not None
+		if re.search(pattern, content, flags=re.IGNORECASE) is not None:
+			return True
+
+		normalized_word = self._normalize_text_for_match(word)
+		if not normalized_word:
+			return False
+
+		normalized_content = self._normalize_text_for_match(content)
+		normalized_pattern = rf"(?<![a-z0-9]){re.escape(normalized_word)}(?![a-z0-9])"
+		if re.search(normalized_pattern, normalized_content) is not None:
+			return True
+
+		compact_content = normalized_content.replace(" ", "")
+		compact_word = normalized_word.replace(" ", "")
+		return bool(compact_word) and compact_word in compact_content
 
 	def _resolve_member(self, guild: discord.Guild, user_ref: str) -> Optional[discord.Member]:
 		candidate = user_ref.strip()
