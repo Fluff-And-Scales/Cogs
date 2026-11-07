@@ -1,0 +1,8 @@
+{
+  "author": ["GitHub Copilot"],
+  "description": "Automatically delete messages in configured channels after per-channel delays.",
+  "install_msg": "CCAutoClean loaded.",
+  "short": "Per-channel auto-delete cleanup for messages.",
+  "tags": ["redbot", "moderation", "cleanup", "automation"],
+  "type": "COG"
+}
