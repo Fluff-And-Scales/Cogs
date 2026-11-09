@@ -33,8 +33,8 @@ class CCSendDM(commands.Cog):
 			await ctx.send_help()
 
 	@ccsenddm.command(name="send")
-	async def ccsenddm_send(self, ctx: commands.Context, user: discord.User, *, message: str) -> None:
-		"""Send a DM to a specified user."""
+	async def ccsenddm_send(self, ctx: commands.Context, user: discord.Member, *, message: str) -> None:
+		"""Send a DM to a specified user member."""
 		content = message.strip()
 		if not content:
 			await self._send_temporary_notice(ctx, "Message content cannot be empty.")
@@ -57,7 +57,7 @@ class CCSendDM(commands.Cog):
 		await self._cleanup_invocation(ctx)
 
 	@ccsenddm.command(name="sendas")
-	async def ccsenddm_sendas(self, ctx: commands.Context, user: discord.User, *, message: str) -> None:
+	async def ccsenddm_sendas(self, ctx: commands.Context, user: discord.Member, *, message: str) -> None:
 		"""Send a DM with sender context prefix."""
 		content = message.strip()
 		if not content:
