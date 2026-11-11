@@ -414,7 +414,7 @@ class CCWordReact(commands.Cog):
 			await self._run_custom_command(message, command_name)
 			return
 
-	@commands.group(invoke_without_command=True)
+	@commands.hybrid_group(invoke_without_command=True)
 	@commands.guild_only()
 	@commands.admin_or_permissions(manage_guild=True)
 	async def ccwordreactset(self, ctx: commands.Context) -> None:
@@ -564,7 +564,7 @@ class CCWordReact(commands.Cog):
 		await self.config.guild(ctx.guild).global_cooldown_seconds.set(seconds)
 		await ctx.send(f"Global cooldown set to {seconds:g}s.")
 
-	@ccwordreactset.group(name="output", invoke_without_command=True)
+	@ccwordreactset.hybrid_group(name="output", invoke_without_command=True)
 	async def ccwordreactset_output(self, ctx: commands.Context) -> None:
 		"""Configure output channels by output type (text/image)."""
 		if ctx.invoked_subcommand is None:
