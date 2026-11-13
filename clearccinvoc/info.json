@@ -1,5 +1,5 @@
 {
-  "author": ["GitHub Copilot"],
+  "author": ["Dralzin"],
   "description": "Automatically deletes custom command invocation messages before the customcom response is sent.",
   "install_msg": "ClearCCInvoc loaded. Add it to your Redbot cog folder and load the package.",
   "short": "Delete customcom invocations before response.",

@@ -1,5 +1,5 @@
 {
-  "author": ["GitHub Copilot"],
+  "author": ["Dralzin"],
   "description": "A Redbot cog scaffold for CCListRef.",
   "install_msg": "CCListRef loaded.",
   "short": "CCListRef cog.",

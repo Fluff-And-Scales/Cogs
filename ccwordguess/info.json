@@ -1,5 +1,5 @@
 {
-  "author": ["GitHub Copilot"],
+  "author": ["Dralzin"],
   "description": "A configurable word guessing game for Redbot channels.",
   "install_msg": "CCWordGuess loaded.",
   "short": "Play a word guessing game in chat.",

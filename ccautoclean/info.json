@@ -1,5 +1,5 @@
 {
-  "author": ["GitHub Copilot"],
+  "author": ["Dralzin"],
   "description": "Automatically delete messages in configured channels after per-channel delays.",
   "install_msg": "CCAutoClean loaded.",
   "short": "Per-channel auto-delete cleanup for messages.",

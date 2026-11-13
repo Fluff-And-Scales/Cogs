@@ -1,5 +1,5 @@
 {
-  "author": ["GitHub Copilot"],
+  "author": ["Dralzin"],
   "description": "Submit formatted quotes to a configured quotes channel.",
   "install_msg": "CCQuotes loaded.",
   "short": "Post quote embeds to a quotes channel.",

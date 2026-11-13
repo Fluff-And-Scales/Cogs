@@ -1,5 +1,5 @@
 {
-  "author": ["GitHub Copilot"],
+  "author": ["Dralzin"],
   "description": "Send direct messages to specified users through Redbot.",
   "install_msg": "CCSendDM loaded.",
   "short": "Admin DM sender cog.",
