@@ -23,6 +23,48 @@ class CCQuotes(commands.Cog):
 		if ctx.invoked_subcommand is None:
 			await ctx.send_help()
 
+	async def _build_quote_embed(
+		self,
+		submitter_name: str,
+		quote_text: str,
+		said_by: str | None = None,
+		date_said: str | None = None,
+		quote_size_mode: str = "normal",
+	) -> discord.Embed:
+		clean_quote = quote_text.strip()
+		clean_said_by = said_by.strip() if isinstance(said_by, str) and said_by.strip() else None
+		clean_date = date_said.strip() if isinstance(date_said, str) and date_said.strip() else datetime.utcnow().strftime("%m/%d/%Y %H:%M")
+		if quote_size_mode not in self._VALID_SIZE_MODES:
+			quote_size_mode = "normal"
+
+		quote_line = f'**"{clean_quote}"**'
+		if quote_size_mode == "large":
+			quote_line = f'### {quote_line}'
+		elif quote_size_mode == "xlarge":
+			quote_line = f'## {quote_line}'
+		elif quote_size_mode == "xxlarge":
+			quote_line = f'# {quote_line}'
+
+		body_lines = [
+			f"User **{submitter_name}** has indicated a new quote! Entry added to registry.",
+			"",
+			quote_line,
+		]
+		if clean_said_by or clean_date:
+			body_lines.append("** **")
+			body_lines.append("** **")
+		if clean_said_by:
+			body_lines.append(f"- {clean_said_by},")
+		if clean_date:
+			date_indent = "  " if clean_said_by else ""
+			body_lines.append(f"{date_indent}{clean_date}")
+
+		return discord.Embed(
+			title="# New Quote Detected",
+			description="\n".join(body_lines),
+			color=discord.Color.teal(),
+		)
+
 	@quote.command(name="add")
 	async def quote_add(
 		self,
@@ -47,38 +89,13 @@ class CCQuotes(commands.Cog):
 			await ctx.send("Quote text is required.")
 			return
 
-		clean_said_by = said_by.strip() if isinstance(said_by, str) and said_by.strip() else None
-		clean_date = date_said.strip() if isinstance(date_said, str) and date_said.strip() else datetime.utcnow().strftime("%m/%d/%Y %H:%M")
 		quote_size_mode = str(await self.config.guild(ctx.guild).quote_size_mode() or "normal").casefold().strip()
-		if quote_size_mode not in self._VALID_SIZE_MODES:
-			quote_size_mode = "normal"
-
-		quote_line = f'**"{clean_quote}"**'
-		if quote_size_mode == "large":
-			quote_line = f'### {quote_line}'
-		elif quote_size_mode == "xlarge":
-			quote_line = f'## {quote_line}'
-		elif quote_size_mode == "xxlarge":
-			quote_line = f'# {quote_line}'
-
-		body_lines = [
-			f"User **{ctx.author.display_name}** has indicated a new quote! Entry added to registry.",
-			"",
-			quote_line,
-		]
-		if clean_said_by or clean_date:
-			body_lines.append("** **")
-			body_lines.append("** **")
-		if clean_said_by:
-			body_lines.append(f"- {clean_said_by},")
-		if clean_date:
-			date_indent = "  " if clean_said_by else ""
-			body_lines.append(f"{date_indent}{clean_date}")
-
-		embed = discord.Embed(
-			title="# New Quote Detected",
-			description="\n".join(body_lines),
-			color=discord.Color.teal(),
+		embed = await self._build_quote_embed(
+			submitter_name=ctx.author.display_name,
+			quote_text=clean_quote,
+			said_by=said_by,
+			date_said=date_said,
+			quote_size_mode=quote_size_mode,
 		)
 
 		await channel.send(embed=embed)
@@ -120,6 +137,30 @@ class CCQuotes(commands.Cog):
 			await ctx.send(f"Current quotes channel: {channel.mention}\nQuote size style: `{size_mode}`")
 		else:
 			await ctx.send(f"Quotes channel is not set.\nQuote size style: `{size_mode}`")
+
+	@quote.command(name="preview")
+	async def quote_preview(
+		self,
+		ctx: commands.Context,
+		quote_text: str,
+		said_by: str | None = None,
+		date_said: str | None = None,
+	) -> None:
+		"""Preview how a quote embed will look using current settings in this channel."""
+		clean_quote = quote_text.strip()
+		if not clean_quote:
+			await ctx.send("Quote text is required.")
+			return
+
+		quote_size_mode = str(await self.config.guild(ctx.guild).quote_size_mode() or "normal").casefold().strip()
+		embed = await self._build_quote_embed(
+			submitter_name=ctx.author.display_name,
+			quote_text=clean_quote,
+			said_by=said_by,
+			date_said=date_said,
+			quote_size_mode=quote_size_mode,
+		)
+		await ctx.send(embed=embed)
 
 
 async def setup(bot: commands.Bot):
