@@ -67,12 +67,13 @@ class CCQuotes(commands.Cog):
 			quote_line,
 		]
 		if clean_said_by or clean_date:
-			body_lines.append("")
-			body_lines.append("")
+			body_lines.append("** **")
+			body_lines.append("** **")
 		if clean_said_by:
-			body_lines.append(f"\- {clean_said_by},")
+			body_lines.append(f"- {clean_said_by},")
 		if clean_date:
-			body_lines.append(f"  {clean_date}")
+			date_indent = "  " if clean_said_by else ""
+			body_lines.append(f"{date_indent}{clean_date}")
 
 		embed = discord.Embed(
 			title="# New Quote Detected",
