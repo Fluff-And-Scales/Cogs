@@ -68,7 +68,7 @@ class CCQuotes(commands.Cog):
 		]
 		if clean_said_by or clean_date:
 			body_lines.append("")
-			body_lines.append("──────────")
+			body_lines.append("")
 		if clean_said_by:
 			body_lines.append(f"\- {clean_said_by},")
 		if clean_date:
