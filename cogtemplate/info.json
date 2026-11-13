@@ -1,8 +1,0 @@
-{
-  "author": ["Dralzin"],
-  "description": "Starter template for building new Redbot cogs.",
-  "install_msg": "CogTemplate loaded.",
-  "short": "Redbot cog starter template.",
-  "tags": ["redbot", "template", "starter"],
-  "type": "COG"
-}

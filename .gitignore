@@ -50,3 +50,6 @@ ENV/
 # OS files
 .DS_Store
 Thumbs.db
+
+# Local template scaffold (do not commit)
+cogtemplate/
