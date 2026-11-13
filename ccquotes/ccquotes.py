@@ -46,10 +46,15 @@ class CCQuotes(commands.Cog):
 			return
 
 		clean_said_by = said_by.strip() if isinstance(said_by, str) and said_by.strip() else None
-		clean_date = date_said.strip() if isinstance(date_said, str) and date_said.strip() else None
+		clean_date = date_said.strip() if isinstance(date_said, str) and date_said.strip() else datetime.utcnow().strftime("%m/%d/%Y %H:%M")
 
-		body_lines = [f'"{clean_quote}"']
+		body_lines = [
+			f"User **{ctx.author.display_name}** has indicated a new quote! Entry added to registry.",
+			"",
+			f'**"{clean_quote}"**',
+		]
 		if clean_said_by or clean_date:
+			body_lines.append("")
 			body_lines.append("──────────")
 		if clean_said_by:
 			body_lines.append(f"- {clean_said_by}")
@@ -57,11 +62,10 @@ class CCQuotes(commands.Cog):
 			body_lines.append(clean_date)
 
 		embed = discord.Embed(
+			title="# New Quote Detected",
 			description="\n".join(body_lines),
-			color=discord.Color.blurple(),
-			timestamp=datetime.utcnow(),
+			color=discord.Color.teal(),
 		)
-		embed.set_footer(text=f"Submitted by {ctx.author.display_name}")
 
 		await channel.send(embed=embed)
 		await ctx.send(f"Quote posted to {channel.mention}.")
