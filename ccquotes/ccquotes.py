@@ -1,0 +1,95 @@
+from __future__ import annotations
+
+from datetime import datetime
+
+import discord
+from redbot.core import Config, commands
+
+
+class CCQuotes(commands.Cog):
+	"""Submit formatted quotes to a configured channel."""
+
+	def __init__(self, bot: commands.Bot):
+		self.bot = bot
+		self.config = Config.get_conf(self, identifier=853217640116, force_registration=True)
+		self.config.register_guild(quote_channel_id=None)
+
+	@commands.group(invoke_without_command=True)
+	@commands.guild_only()
+	async def quote(self, ctx: commands.Context) -> None:
+		"""Quote commands."""
+		if ctx.invoked_subcommand is None:
+			await ctx.send_help()
+
+	@quote.command(name="add")
+	async def quote_add(
+		self,
+		ctx: commands.Context,
+		quote_text: str,
+		said_by: str | None = None,
+		date_said: str | None = None,
+	) -> None:
+		"""Submit a quote: quote add <quote_text> [said_by] [date_said]."""
+		channel_id = await self.config.guild(ctx.guild).quote_channel_id()
+		if not isinstance(channel_id, int):
+			await ctx.send("Quote channel is not set. Use `quoteset channel #channel` first.")
+			return
+
+		channel = ctx.guild.get_channel(channel_id)
+		if not isinstance(channel, discord.TextChannel):
+			await ctx.send("Configured quote channel is not available. Set it again with `quoteset channel #channel`.")
+			return
+
+		clean_quote = quote_text.strip()
+		if not clean_quote:
+			await ctx.send("Quote text is required.")
+			return
+
+		clean_said_by = said_by.strip() if isinstance(said_by, str) and said_by.strip() else None
+		clean_date = date_said.strip() if isinstance(date_said, str) and date_said.strip() else None
+
+		body_lines = [f'"{clean_quote}"']
+		if clean_said_by or clean_date:
+			body_lines.append("──────────")
+		if clean_said_by:
+			body_lines.append(f"- {clean_said_by}")
+		if clean_date:
+			body_lines.append(clean_date)
+
+		embed = discord.Embed(
+			description="\n".join(body_lines),
+			color=discord.Color.blurple(),
+			timestamp=datetime.utcnow(),
+		)
+		embed.set_footer(text=f"Submitted by {ctx.author.display_name}")
+
+		await channel.send(embed=embed)
+		await ctx.send(f"Quote posted to {channel.mention}.")
+
+	@commands.group(invoke_without_command=True)
+	@commands.guild_only()
+	@commands.admin_or_permissions(manage_guild=True)
+	async def quoteset(self, ctx: commands.Context) -> None:
+		"""Configure CCQuotes settings."""
+		if ctx.invoked_subcommand is None:
+			await ctx.send_help()
+
+	@quoteset.command(name="channel")
+	async def quoteset_channel(self, ctx: commands.Context, channel: discord.TextChannel) -> None:
+		"""Set the quotes channel."""
+		await self.config.guild(ctx.guild).quote_channel_id.set(channel.id)
+		await ctx.send(f"Quotes channel set to {channel.mention}.")
+
+	@quoteset.command(name="show")
+	async def quoteset_show(self, ctx: commands.Context) -> None:
+		"""Show the current quotes channel."""
+		channel_id = await self.config.guild(ctx.guild).quote_channel_id()
+		channel = ctx.guild.get_channel(channel_id) if isinstance(channel_id, int) else None
+		if isinstance(channel, discord.TextChannel):
+			await ctx.send(f"Current quotes channel: {channel.mention}")
+		else:
+			await ctx.send("Quotes channel is not set.")
+
+
+async def setup(bot: commands.Bot):
+	await bot.add_cog(CCQuotes(bot))
