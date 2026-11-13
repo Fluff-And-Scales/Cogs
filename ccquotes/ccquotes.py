@@ -9,10 +9,12 @@ from redbot.core import Config, commands
 class CCQuotes(commands.Cog):
 	"""Submit formatted quotes to a configured channel."""
 
+	_VALID_SIZE_MODES = {"normal", "large", "xlarge", "xxlarge"}
+
 	def __init__(self, bot: commands.Bot):
 		self.bot = bot
 		self.config = Config.get_conf(self, identifier=853217640116, force_registration=True)
-		self.config.register_guild(quote_channel_id=None)
+		self.config.register_guild(quote_channel_id=None, quote_size_mode="normal")
 
 	@commands.group(invoke_without_command=True)
 	@commands.guild_only()
@@ -47,13 +49,22 @@ class CCQuotes(commands.Cog):
 
 		clean_said_by = said_by.strip() if isinstance(said_by, str) and said_by.strip() else None
 		clean_date = date_said.strip() if isinstance(date_said, str) and date_said.strip() else datetime.utcnow().strftime("%m/%d/%Y %H:%M")
+		quote_size_mode = str(await self.config.guild(ctx.guild).quote_size_mode() or "normal").casefold().strip()
+		if quote_size_mode not in self._VALID_SIZE_MODES:
+			quote_size_mode = "normal"
 
-		quote_title = f'"{clean_quote}"'
-		if len(quote_title) > 256:
-			quote_title = quote_title[:253] + "..."
+		quote_line = f'**"{clean_quote}"**'
+		if quote_size_mode == "large":
+			quote_line = f'### {quote_line}'
+		elif quote_size_mode == "xlarge":
+			quote_line = f'## {quote_line}'
+		elif quote_size_mode == "xxlarge":
+			quote_line = f'# {quote_line}'
 
 		body_lines = [
 			f"User **{ctx.author.display_name}** has indicated a new quote! Entry added to registry.",
+			"",
+			quote_line,
 		]
 		if clean_said_by or clean_date:
 			body_lines.append("")
@@ -64,11 +75,10 @@ class CCQuotes(commands.Cog):
 			body_lines.append(clean_date)
 
 		embed = discord.Embed(
-			title=quote_title,
+			title="# New Quote Detected",
 			description="\n".join(body_lines),
 			color=discord.Color.teal(),
 		)
-		embed.set_author(name="# New Quote Detected")
 
 		await channel.send(embed=embed)
 		await ctx.send(f"Quote posted to {channel.mention}.")
@@ -87,15 +97,28 @@ class CCQuotes(commands.Cog):
 		await self.config.guild(ctx.guild).quote_channel_id.set(channel.id)
 		await ctx.send(f"Quotes channel set to {channel.mention}.")
 
+	@quoteset.command(name="fontsize")
+	async def quoteset_fontsize(self, ctx: commands.Context, size: str) -> None:
+		"""Set quote size style: normal, large, xlarge, or xxlarge."""
+		normalized = size.casefold().strip()
+		if normalized not in self._VALID_SIZE_MODES:
+			await ctx.send("Font size must be `normal`, `large`, `xlarge`, or `xxlarge`.")
+			return
+		await self.config.guild(ctx.guild).quote_size_mode.set(normalized)
+		await ctx.send(f"Quote font size style set to `{normalized}`.")
+
 	@quoteset.command(name="show")
 	async def quoteset_show(self, ctx: commands.Context) -> None:
-		"""Show the current quotes channel."""
+		"""Show the current quotes channel and quote size mode."""
 		channel_id = await self.config.guild(ctx.guild).quote_channel_id()
 		channel = ctx.guild.get_channel(channel_id) if isinstance(channel_id, int) else None
+		size_mode = str(await self.config.guild(ctx.guild).quote_size_mode() or "normal").casefold().strip()
+		if size_mode not in self._VALID_SIZE_MODES:
+			size_mode = "normal"
 		if isinstance(channel, discord.TextChannel):
-			await ctx.send(f"Current quotes channel: {channel.mention}")
+			await ctx.send(f"Current quotes channel: {channel.mention}\nQuote size style: `{size_mode}`")
 		else:
-			await ctx.send("Quotes channel is not set.")
+			await ctx.send(f"Quotes channel is not set.\nQuote size style: `{size_mode}`")
 
 
 async def setup(bot: commands.Bot):
