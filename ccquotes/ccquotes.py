@@ -54,7 +54,7 @@ class CCQuotes(commands.Cog):
 			body_lines.append("** **")
 			body_lines.append("** **")
 		if clean_said_by:
-			body_lines.append(f"- {clean_said_by},")
+			body_lines.append(f"\- {clean_said_by},")
 		if clean_date:
 			date_indent = "  " if clean_said_by else ""
 			body_lines.append(f"{date_indent}{clean_date}")
