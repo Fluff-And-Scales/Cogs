@@ -70,9 +70,9 @@ class CCQuotes(commands.Cog):
 			body_lines.append("")
 			body_lines.append("──────────")
 		if clean_said_by:
-			body_lines.append(f"- {clean_said_by}")
+			body_lines.append(f"\- {clean_said_by},")
 		if clean_date:
-			body_lines.append(clean_date)
+			body_lines.append(f"  {clean_date}")
 
 		embed = discord.Embed(
 			title="# New Quote Detected",
